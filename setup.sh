@@ -13,6 +13,18 @@ fi
 ### Setup
 # install dependencies in pwndbg venv
 "$1/.venv/bin/python3" -m pip install -r requirements.txt
+
+# Build the bundled TypeScript frontend when the JavaScript toolchain is
+# available. The legacy page remains as a source-checkout fallback, but a
+# production install should serve the Vite bundle from vheapViews/dist.
+if command -v pnpm >/dev/null 2>&1; then
+  if ! pnpm install --frozen-lockfile || ! pnpm build; then
+    echo "Warning: frontend build failed; run 'pnpm install && pnpm build' in $PWD."
+  fi
+else
+  echo "Warning: pnpm is not installed; run 'pnpm install && pnpm build' in $PWD to enable the TypeScript frontend."
+fi
+
 echo "source $PWD/vheap.py" >> ~/.gdbinit
 
 echo "vHeap Installed."

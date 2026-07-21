@@ -1,9 +1,11 @@
 # Extending vHeap
 
-All you need to do to extend is take a look at the [extended.js](https://github.com/wes4m/vheap/blob/master/vheapViews/static/js/extended.js) file.
-Extensions are based on callbacks. 
+The legacy Graphviz renderer remains in `vheapViews/static/js` as a fallback.
+New UI work belongs in `frontend/src`, where the data model and graph builder
+are typed TypeScript modules. Extensions are based on the same JSON snapshot
+contract, so a debugger adapter does not need to know about React components.
 
-The file also includes a few examples to follow.
+The legacy file includes a few callback examples to follow.
 The double free detection and overlap detection shown in the demo are extension
 functionalities.
 
@@ -18,16 +20,34 @@ contain:
 - `data`: bounded payload rows with `offset`, `address`, `value`, `bytes`, and
   `ascii` values.
 - `dataSize`, `dataAddress`, `dataTruncated`, and `dataDisabled` metadata.
+- top-level and per-chunk `pointerSize`, which let the frontend select the
+  correct ABI width when it reinterprets payload bytes.
 
-An extension can append a row to `chunk.extended.rows` or set
-`chunk.extended.backgroundColor` before DOT generation. Management structures
-are available through the top-level `structures` array. Each structure has an
+An extension can append a row to `chunk.extended.rows`. Management structures
+are available through the top-level `structures` array.
+Each structure has an
 `id`, `kind`, `label`, `address`, and a list of fields; a field may include a
 `target` address to create a visual reference to another structure or chunk.
 
 Payload size is controlled from GDB with `vhserv --data-bytes N` or
 `vhstate --data-bytes N`. Set it to `0` when a large heap should be rendered
 without reading payload memory.
+
+## Chunk type views
+
+`frontend/src/structViews.ts` contains the typed payload view registry. A view
+is a list of little-endian field specifications (`offset`, `size`, and scalar
+kind). The Inspector currently ships with `malloc_chunk`, `_IO_FILE`,
+`_IO_FILE_plus`, `_IO_jump_t`, and a partial `_IO_wide_data` view. Add a new
+`ChunkViewType`, option, and layout builder there to support another glibc
+structure without changing the allocator collector or Socket.IO protocol.
+
+The `_IO_FILE` tail differs slightly between glibc releases: newer versions
+name fields such as `_prevchain` and `_total_written`, while older versions use
+the same bytes as `__pad5`/`_unused2`. The view keeps those offsets stable and
+labels the ABI-specific fields. Always compare it with the target libc's
+`pahole`/`ptype` output when an exploit depends on a version-specific tail
+field.
 
 
 > TO DO: Explaining this section better (Although it doesn't really need much explination)

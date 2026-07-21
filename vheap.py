@@ -356,6 +356,7 @@ class VisualHeap:
         self.stopping = False
         self.data_bytes = DEFAULT_DATA_BYTES
         self.show_structures = True
+        self.pointer_size = 8
         self.structures = []
         self.clearHeap()
         self.addBinHead("vHeap is ready", "0x200")
@@ -373,17 +374,31 @@ class VisualHeap:
 
     def aiohttp_server(self) -> web.AppRunner:
         """
-        HTTP Server handler: handlers page, and js files requests
+        HTTP server for the compiled Vite application and Socket.IO transport.
+
+        Development uses Vite's proxy, while the installed plugin serves the
+        production bundle directly from ``vheapViews/dist``.  Keep the legacy
+        page as a fallback so an older checkout can still start the debugger
+        command before the frontend is built.
         """
         self.sio = socketio.AsyncServer()
+        dist_path = self.viewPath / "dist"
+        index_path = dist_path / "index.html"
 
         async def index(_request: web.Request) -> web.Response:
-            with open(self.viewPath / 'vheap.html', "r", encoding="utf-8") as f:
-                return web.Response(text=f.read(), content_type='text/html')
+            page = index_path if index_path.is_file() else self.viewPath / "vheap.html"
+            if not page.is_file():
+                raise web.HTTPNotFound(text="vHeap frontend has not been built")
+            return web.FileResponse(page)
 
-        async def jsfile(request: web.Request) -> web.Response:
-            with open(self.viewPath / 'static' / 'js' / os.path.basename(request.match_info['name']), "r", encoding="utf-8") as f:
-                return web.Response(text=f.read(), content_type='text/javascript')
+        async def legacy_js(request: web.Request) -> web.Response:
+            # Keep the source-checkout fallback page functional while users
+            # transition to the compiled TypeScript bundle.
+            name = os.path.basename(request.match_info["name"])
+            script = self.viewPath / "static" / "js" / name
+            if not script.is_file():
+                raise web.HTTPNotFound()
+            return web.FileResponse(script)
 
         @self.sio.on('getHeap')
         async def getHeap(sid, _msg):
@@ -398,7 +413,13 @@ class VisualHeap:
 
         # router
         app.router.add_get('/', index)
-        app.router.add_get(r'/static/js/{name}', jsfile)
+        app.router.add_get(r'/static/js/{name}', legacy_js)
+        # Vite emits content-addressed JavaScript/CSS under ``assets``.  Do
+        # not register a missing directory: this keeps the Python plugin
+        # usable from a source checkout where the optional build has not run.
+        assets_path = dist_path / "assets"
+        if assets_path.is_dir():
+            app.router.add_static('/assets', assets_path, show_index=False)
 
         handler = web.AppRunner(app)
 
@@ -526,6 +547,7 @@ class VisualHeap:
         with self.state_lock:
             ret = {
                 "version": 2,
+                "pointerSize": self.pointer_size,
                 "heads": dict(self.binsheads),
                 "bins": {name: list(chunks) for name, chunks in self.binschunks.items()},
                 "structures": list(self.structures),
@@ -596,6 +618,10 @@ class VisualHeap:
         """
         Makes a chunk struct
         """
+        pointer_size = _pointer_size()
+        if pointer_size not in (4, 8):
+            pointer_size = 8
+        self.pointer_size = pointer_size
         fields: List[Dict[str, str]] = []
 
         def add_field(name: str, value: Any, port: Optional[str] = None) -> None:
@@ -622,7 +648,8 @@ class VisualHeap:
             "p": _format_flag(p),
             "fd": _format_value(fd),
             "bk": _format_value(bk),
-            "headerSize": str(2 * _pointer_size()),
+            "headerSize": str(2 * pointer_size),
+            "pointerSize": pointer_size,
             "fields": fields,
             "data": data or [],
             "dataAddress": _format_value(data_address),
