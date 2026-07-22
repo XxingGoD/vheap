@@ -99,6 +99,7 @@ export interface MemoryViewRecord {
 export interface HeapSnapshot {
   version?: number;
   pointerSize?: number;
+  structuresEnabled?: boolean;
   heads: Record<string, string>;
   bins: Record<string, HeapChunk[]>;
   structures: ManagementStructure[];

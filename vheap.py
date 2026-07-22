@@ -412,12 +412,19 @@ class VisualHeap:
         self.sio = socketio.AsyncServer()
         dist_path = self.viewPath / "dist"
         index_path = dist_path / "index.html"
+        no_cache_headers = {
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        }
 
         async def index(_request: web.Request) -> web.Response:
             page = index_path if index_path.is_file() else self.viewPath / "vheap.html"
             if not page.is_file():
                 raise web.HTTPNotFound(text="vHeap frontend has not been built")
-            return web.FileResponse(page)
+            # Edge can retain an old index that points at assets removed by a
+            # newer Vite build. Hashed assets may be cached; the entry page may not.
+            return web.FileResponse(page, headers=no_cache_headers)
 
         async def legacy_js(request: web.Request) -> web.Response:
             # Keep the source-checkout fallback page functional while users
@@ -426,7 +433,15 @@ class VisualHeap:
             script = self.viewPath / "static" / "js" / name
             if not script.is_file():
                 raise web.HTTPNotFound()
-            return web.FileResponse(script)
+            return web.FileResponse(script, headers=no_cache_headers)
+
+        @web.middleware
+        async def frontend_cache_control(request: web.Request, handler) -> web.StreamResponse:
+            response = await handler(request)
+            if request.path.startswith("/assets/"):
+                # Do not let Edge keep a removed hashed asset after a rebuild.
+                response.headers.update(no_cache_headers)
+            return response
 
         @self.sio.on('getHeap')
         async def getHeap(sid, _msg):
@@ -506,7 +521,7 @@ class VisualHeap:
             await self.sio.emit("memoryData", result, to=sid)
 
         # Create http server, and socket io
-        app = web.Application()
+        app = web.Application(middlewares=[frontend_cache_control])
         self.sio.attach(app)
 
         # router
@@ -646,11 +661,15 @@ class VisualHeap:
             ret = {
                 "version": 2,
                 "pointerSize": self.pointer_size,
+                "structuresEnabled": bool(self.show_structures),
                 "heads": dict(self.binsheads),
                 "bins": {name: list(chunks) for name, chunks in self.binschunks.items()},
                 "structures": list(self.structures),
             }
-            return json.dumps(ret)
+            # Extensions and older pwndbg wrappers can leave a non-JSON value
+            # in an optional field. Stringifying that value keeps the complete
+            # snapshot (and the allocator structures panel) available.
+            return json.dumps(ret, default=str)
 
     def chunkPayloadSize(self, chunk: Any) -> int:
         """Return the payload capacity represented by a Pwndbg Chunk."""
@@ -937,6 +956,10 @@ class VisualHeap:
             structures.append(structure)
 
         arena = _safe_attr(allocator, "main_arena")
+        if arena is None:
+            # Older pwndbg releases expose the arena on the heap module rather
+            # than on the allocator instance.
+            arena = _safe_attr(pwndbg.aglib.heap, "main_arena")
         append_structure(
             self._objectStructure(
                 arena,
@@ -996,7 +1019,10 @@ class VisualHeap:
             if isinstance(candidates, dict):
                 candidates = list(candidates.values())
             elif not isinstance(candidates, (list, tuple, set)):
-                candidates = [candidates]
+                try:
+                    candidates = list(candidates)
+                except Exception:
+                    candidates = [candidates]
             for index, candidate in enumerate(candidates):
                 append_structure(
                     self._objectStructure(

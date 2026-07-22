@@ -450,6 +450,14 @@ export default function App() {
   const visibleChunkCount = graphModel.chunks.length;
   const totalChunkCount = useMemo(() => displayChunks(snapshot, new Set([...allBinNames])).length, [snapshot, allBinNames]);
   const hasFilters = query.trim().length > 0 || visibleBins.size !== allBinNames.length || !showStructures;
+  const structureCount = snapshot.structures.length;
+  const structureStatus = !DEMO_MODE && !connected
+    ? "waiting for snapshot"
+    : snapshot.structuresEnabled === false
+      ? "collection disabled"
+      : structureCount > 0
+        ? `${structureCount} reported`
+        : "none reported";
 
   return (
     <div className="app-shell">
@@ -488,9 +496,10 @@ export default function App() {
             </div>
           </section>
 
-          <section className="sidebar-section">
-            <div className="section-heading"><span>allocator structures</span><button className="text-button" type="button" onClick={() => setShowStructures((show) => !show)}>{showStructures ? <Eye size={13} /> : <EyeOff size={13} />}{showStructures ? "shown" : "hidden"}</button></div>
-            <button className={`structure-toggle ${showStructures ? "is-on" : ""}`} type="button" onClick={() => setShowStructures((show) => !show)}><span className="toggle-track"><span /></span><span>malloc_state / heap_info / tcache</span><b>{snapshot.structures.length}</b></button>
+          <section className="sidebar-section" aria-labelledby="allocator-structures-heading">
+            <div className="section-heading"><span id="allocator-structures-heading">allocator structures</span><button className="text-button" type="button" onClick={() => setShowStructures((show) => !show)} aria-pressed={showStructures} aria-label={`${showStructures ? "Hide" : "Show"} allocator structures`}>{showStructures ? <Eye size={13} /> : <EyeOff size={13} />}{showStructures ? "shown" : "hidden"}</button></div>
+            <button id="allocator-structures-toggle" className={`structure-toggle ${showStructures ? "is-on" : ""}`} type="button" onClick={() => setShowStructures((show) => !show)} aria-pressed={showStructures} aria-label={`${showStructures ? "Hide" : "Show"} allocator structures`}><span className="toggle-track" aria-hidden="true"><span /></span><span className="structure-toggle-label">malloc_state / heap_info / tcache</span><b aria-live="polite">{structureCount}</b></button>
+            <div className={`structures-status ${structureCount > 0 ? "has-structures" : ""}`} role="status">{structureStatus}</div>
           </section>
 
           <section className="sidebar-section memory-section">
@@ -553,6 +562,7 @@ export default function App() {
           {error && <div className="error-banner"><AlertTriangle size={15} /><span>{error}</span><button type="button" onClick={() => setError(null)} title="Dismiss" aria-label="Dismiss error"><X size={14} /></button></div>}
           <div className="flow-stage">
             {nodes.length === 0 ? <div className="canvas-empty"><Boxes size={28} /><h2>{query ? "No matching nodes" : connected || DEMO_MODE ? "Heap snapshot is empty" : "Waiting for heap data"}</h2><p>{query ? "No nodes match the current filter." : "No allocator nodes reported."}</p></div> : (
+              /* Keep management nodes mounted while Edge is measuring the canvas. */
               <ReactFlow<HeapNode, HeapEdge>
                 nodes={nodes}
                 edges={edges}
@@ -568,7 +578,6 @@ export default function App() {
                 fitView
                 minZoom={0.1}
                 maxZoom={2.2}
-                onlyRenderVisibleElements
                 proOptions={{ hideAttribution: true }}
                 nodesDraggable
                 nodesConnectable={false}

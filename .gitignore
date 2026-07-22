@@ -6,6 +6,7 @@ venv/
 .env
 node_modules/
 .vite/
+.tools/
 *.tsbuildinfo
 vheapViews/dist/
 

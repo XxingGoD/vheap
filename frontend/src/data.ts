@@ -21,11 +21,46 @@ export function text(value: unknown, fallback = "None"): string {
   return String(value);
 }
 
+function booleanValue(value: unknown): boolean | undefined {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return value !== 0;
+  if (typeof value !== "string") return undefined;
+  const normalised = value.trim().toLowerCase();
+  if (["true", "1", "yes", "on"].includes(normalised)) return true;
+  if (["false", "0", "no", "off"].includes(normalised)) return false;
+  return undefined;
+}
+
 function firstDefined(record: UnknownRecord, ...keys: string[]): unknown {
   for (const key of keys) {
     if (record[key] !== undefined && record[key] !== null) return record[key];
   }
   return undefined;
+}
+
+function firstNonEmpty(values: unknown[]): unknown {
+  let fallback: unknown;
+  for (const rawValue of values) {
+    const value = parseEmbeddedJson(rawValue);
+    if (value === undefined || value === null) continue;
+    if (fallback === undefined) fallback = value;
+    if (Array.isArray(value) && value.length === 0) continue;
+    if (isRecord(value) && Object.keys(value).length === 0) continue;
+    if (typeof value === "string" && value.trim() === "") continue;
+    return value;
+  }
+  return fallback;
+}
+
+function parseEmbeddedJson(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  const raw = value.trim();
+  if (!raw || (!raw.startsWith("{") && !raw.startsWith("["))) return value;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return value;
+  }
 }
 
 export function hexNumber(value: unknown): number {
@@ -72,10 +107,10 @@ export function isPointer(value: unknown): boolean {
 
 export function normaliseField(value: unknown): HeapField | null {
   if (!isRecord(value)) return null;
-  const target = firstDefined(value, "target", "pointer");
+  const target = firstDefined(value, "target", "pointer", "targetAddress", "target_address");
   return {
-    name: text(firstDefined(value, "name", "field"), "field"),
-    value: text(firstDefined(value, "value", "val")),
+    name: text(firstDefined(value, "name", "field", "fieldName", "field_name"), "field"),
+    value: text(firstDefined(value, "value", "val", "fieldValue", "field_value")),
     ...(firstDefined(value, "port", "handle") ? { port: text(firstDefined(value, "port", "handle")) } : {}),
     ...(target ? { target: text(target) } : {}),
   };
@@ -132,17 +167,120 @@ export function normaliseChunk(value: unknown, fallbackIndex: number, defaultPoi
 
 export function normaliseStructure(value: unknown, fallbackIndex: number): ManagementStructure {
   const raw = isRecord(value) ? value : {};
-  const fields = Array.isArray(raw.fields)
-    ? raw.fields.map(normaliseField).filter((field): field is HeapField => field !== null)
-    : [];
+  const rawFields = parseEmbeddedJson(firstDefined(raw, "fields", "members", "values", "fieldList", "field_list"));
+  const singleField = isRecord(rawFields) &&
+    firstDefined(rawFields, "value", "val", "fieldValue", "field_value", "target", "pointer", "targetAddress", "target_address") !== undefined;
+  const fieldValues = Array.isArray(rawFields)
+    ? rawFields
+    : singleField
+      ? [rawFields]
+      : isRecord(rawFields)
+        ? Object.entries(rawFields).map(([name, fieldValue]) => isRecord(fieldValue)
+          ? { name, ...fieldValue }
+          : { name, value: fieldValue })
+        : [];
+  const fields = fieldValues.map(normaliseField).filter((field): field is HeapField => field !== null);
   return {
-    id: text(raw.id, `structure_${fallbackIndex}`),
-    kind: text(raw.kind, "structure"),
-    label: text(raw.label, text(raw.kind, "structure")),
-    address: text(raw.address),
-    ...(raw.source ? { source: text(raw.source) } : {}),
+    id: text(firstDefined(raw, "id", "key"), `structure_${fallbackIndex}`),
+    kind: text(firstDefined(raw, "kind", "type", "structType"), "structure"),
+    label: text(firstDefined(raw, "label", "name"), text(firstDefined(raw, "kind", "type", "structType"), "structure")),
+    address: text(firstDefined(raw, "address", "addr", "location")),
+    ...(raw.source !== undefined && raw.source !== null ? { source: text(raw.source) } : {}),
     fields,
   };
+}
+
+function looksLikeStructure(value: UnknownRecord): boolean {
+  const fieldContainers = [
+    "fields",
+    "members",
+    "values",
+    "fieldList",
+    "field_list",
+  ];
+  if (fieldContainers.some((key) => value[key] !== undefined && value[key] !== null)) return true;
+
+  const metadata = [
+    "kind",
+    "type",
+    "structType",
+    "address",
+    "addr",
+    "location",
+    "label",
+    "name",
+  ];
+  const hasMetadata = metadata.some((key) => {
+    const candidate = value[key];
+    return candidate !== undefined && candidate !== null && !isRecord(candidate) && !Array.isArray(candidate);
+  });
+  if (!hasMetadata) return false;
+  const values = Object.values(value);
+  const mapLike = values.length > 1 && values.every((entry) => isRecord(entry) || Array.isArray(entry));
+  return !mapLike;
+}
+
+/** Accept current arrays, older object maps, and wrapper payloads from pwndbg versions. */
+export function structureEntries(value: unknown): unknown[] {
+  const parsed = parseEmbeddedJson(value);
+  if (Array.isArray(parsed)) {
+    const entries: unknown[] = [];
+    for (const item of parsed) {
+      const itemValue = parseEmbeddedJson(item);
+      if (Array.isArray(itemValue)) {
+        entries.push(...structureEntries(itemValue));
+        continue;
+      }
+      if (isRecord(itemValue) && !looksLikeStructure(itemValue)) {
+        const nested = firstNonEmpty([
+          itemValue.structures,
+          itemValue.managementStructures,
+          itemValue.management_structures,
+          itemValue.allocatorStructures,
+          itemValue.allocator_structures,
+          itemValue.items,
+          itemValue.entries,
+          itemValue.data,
+        ]);
+        if (nested !== undefined) {
+          entries.push(...structureEntries(nested));
+          continue;
+        }
+      }
+      entries.push(itemValue);
+    }
+    return entries;
+  }
+  if (!isRecord(parsed)) return [];
+
+  const nested = firstNonEmpty([
+    parsed.structures,
+    parsed.managementStructures,
+    parsed.management_structures,
+    parsed.allocatorStructures,
+    parsed.allocator_structures,
+    parsed.items,
+    parsed.entries,
+    parsed.data,
+  ]);
+  if (nested !== undefined && !looksLikeStructure(parsed)) return structureEntries(nested);
+  if (looksLikeStructure(parsed)) return [parsed];
+
+  const entries: unknown[] = [];
+  for (const [key, rawEntry] of Object.entries(parsed)) {
+    const entry = parseEmbeddedJson(rawEntry);
+    const addEntry = (candidate: unknown, suffix?: number): void => {
+      const fallbackId = suffix === undefined ? key : `${key}_${suffix}`;
+      if (isRecord(candidate)) {
+        entries.push({ ...candidate, id: text(firstDefined(candidate, "id", "key"), fallbackId) });
+      } else {
+        entries.push({ id: fallbackId, label: key, fields: candidate });
+      }
+    };
+    if (Array.isArray(entry)) entry.forEach((candidate, index) => addEntry(candidate, index));
+    else addEntry(entry);
+  }
+  return entries;
 }
 
 export function parseSnapshot(input: unknown): HeapSnapshot {
@@ -154,21 +292,44 @@ export function parseSnapshot(input: unknown): HeapSnapshot {
     for (const [key, value] of Object.entries(parsed.heads)) heads[key] = text(value);
   }
 
-  const snapshotPointerSize = Number(parsed.pointerSize);
+  const snapshotPointerSize = Number(firstDefined(parsed, "pointerSize", "pointer_size", "wordSize", "word_size"));
   const defaultPointerSize = snapshotPointerSize === 4 || snapshotPointerSize === 8 ? snapshotPointerSize : undefined;
   const bins: Record<string, HeapChunk[]> = {};
   if (isRecord(parsed.bins)) {
     for (const [name, value] of Object.entries(parsed.bins)) {
-      bins[name] = Array.isArray(value) ? value.map((chunk, index) => normaliseChunk(chunk, index, defaultPointerSize)) : [];
+      const chunks = Array.isArray(value)
+        ? value
+        : isRecord(value)
+          ? Object.values(value)
+          : [];
+      bins[name] = chunks.map((chunk, index) => normaliseChunk(chunk, index, defaultPointerSize));
     }
   }
 
-  const structures = Array.isArray(parsed.structures)
-    ? parsed.structures.map(normaliseStructure)
-    : [];
+  const structuresPayload = firstNonEmpty([
+    parsed.structures,
+    parsed.managementStructures,
+    parsed.management_structures,
+    parsed.allocatorStructures,
+    parsed.allocator_structures,
+  ]);
+  const structureIds = new Set<string>();
+  const structures = structureEntries(structuresPayload).map(normaliseStructure).map((structure, index) => {
+    const baseId = structure.id || `structure_${index}`;
+    let id = baseId;
+    let suffix = 2;
+    while (structureIds.has(id)) id = `${baseId}_${suffix++}`;
+    structureIds.add(id);
+    return id === structure.id ? structure : { ...structure, id };
+  });
+  const structuresEnabledValue = firstDefined(parsed, "structuresEnabled", "structures_enabled", "collectStructures", "collect_structures");
+  const structuresEnabled = booleanValue(structuresEnabledValue);
   return {
-    ...(typeof parsed.version === "number" ? { version: parsed.version } : {}),
+    ...(Number.isFinite(Number(firstDefined(parsed, "version", "schemaVersion", "schema_version")))
+      ? { version: Number(firstDefined(parsed, "version", "schemaVersion", "schema_version")) }
+      : {}),
     ...(defaultPointerSize ? { pointerSize: defaultPointerSize } : {}),
+    ...(structuresEnabled !== undefined ? { structuresEnabled } : {}),
     heads,
     bins,
     structures,
@@ -514,6 +675,7 @@ export function demoSnapshot(): HeapSnapshot {
   return {
     version: 2,
     pointerSize: 8,
+    structuresEnabled: true,
     heads: {
       tcachebinshead0: "0x7000",
       fastbinshead1: "0x8000",

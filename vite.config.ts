@@ -13,6 +13,9 @@ export default defineConfig({
     outDir: path.join(projectRoot, "vheapViews", "dist"),
     emptyOutDir: true,
     sourcemap: false,
+    // Keep optional chaining and BigInt support within the baseline of
+    // Chromium-based Edge versions commonly shipped with Linux/Windows.
+    target: "es2020",
   },
   server: {
     host: "0.0.0.0",
