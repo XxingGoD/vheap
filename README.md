@@ -1,5 +1,9 @@
 # vHeap
 
+![2026-07-22_18-55-52](./TestImage/2026-07-22_18-55-52.png)
+
+
+
 vHeap 是一个面向 GDB/pwndbg 的 glibc ptmalloc 堆可视化工具。它从正在调试的进程中读取堆状态，将 bin、chunk、allocator 管理结构和任意地址的内存内容展示在浏览器中，适合 CTF heap 题分析、调试和教学。
 
 当前版本由两部分组成：
