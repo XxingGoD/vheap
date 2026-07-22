@@ -55,6 +55,13 @@ so debugger APIs are not called from the aiohttp thread. Requests are capped at 
 bytes. A frontend adapter can implement the same event contract and reuse
 `reinterpretMemoryRows` for a different debugger or transport.
 
+The `MemoryRegionView` component expands the shared `DataRow[]` payload into
+16-byte rows through `memoryRegionRows`. It preserves the requested range when
+only a prefix is available, allowing the UI to mark unread cells as `--`.
+Adapters that return explicit `bytes` fields get byte-accurate output; when
+those fields are absent, values are decoded as little-endian pointer-sized
+words.
+
 ## Chunk type views
 
 `frontend/src/structViews.ts` contains the typed payload view registry. A view

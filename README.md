@@ -72,6 +72,12 @@ In demo mode (`?demo=1`), try address `0x2000` with `_IO_FILE_plus` to inspect
 the bundled payload without a GDB session. Memory views are snapshots only;
 they never write to the inferior.
 
+Selecting a memory node opens the **memory region** dock below the graph. It
+shows the requested address range in 16-byte lines with absolute addresses,
+individual byte values (`--` marks bytes that could not be read), and an ASCII
+column. The dock can be refreshed, collapsed, or closed without removing the
+typed structure node.
+
 To update the heap state.
 ```
 vhstate

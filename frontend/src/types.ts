@@ -15,6 +15,19 @@ export interface DataRow {
   ascii?: string;
 }
 
+/** One byte in the debugger-style memory region view. */
+export interface MemoryRegionCell {
+  value: number | null;
+  inRange: boolean;
+}
+
+/** A fixed-width 16-byte line in the debugger-style memory region view. */
+export interface MemoryRegionRow {
+  offset: number;
+  address: string;
+  cells: MemoryRegionCell[];
+}
+
 /** A memory interpretation that can be selected for a chunk in the inspector. */
 export type ChunkViewType = "malloc_chunk" | "io_file" | "io_file_plus" | "io_wide_data" | "io_jump_t";
 

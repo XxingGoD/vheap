@@ -7,6 +7,7 @@ import type {
   ManagementStructure,
   ChunkViewType,
   MemoryViewRecord,
+  MemoryRegionRow,
 } from "./types";
 
 export type UnknownRecord = Record<string, unknown>;
@@ -271,6 +272,28 @@ function rowBytes(row: DataRow, pointerSize: number): number[] {
   }
 }
 
+const MAX_MEMORY_REGION_BYTES = 0x10000;
+
+function unrestrictedRowBytes(row: DataRow, pointerSize: number): number[] {
+  if (row.bytes !== undefined) {
+    const decoded = decodeBytes(row.bytes);
+    if (decoded.length > 0) return decoded;
+  }
+  try {
+    const value = BigInt(row.value);
+    const width = BigInt(pointerSize * 8);
+    const normalised = value < 0n ? (1n << width) + value : value;
+    return Array.from({ length: pointerSize }, (_, index) => Number((normalised >> BigInt(index * 8)) & 0xffn));
+  } catch {
+    return [];
+  }
+}
+
+function regionAddress(value: bigint, pointerSize: number): string {
+  const width = pointerSize === 4 ? 8 : 16;
+  return `0x${value.toString(16).padStart(width, "0")}`;
+}
+
 export function memoryViewId(address: string, type: ChunkViewType): string {
   return `memory:${canonicalAddress(address)}:${type}`;
 }
@@ -320,6 +343,58 @@ export function readSnapshotMemory(snapshot: HeapSnapshot, address: string | num
     });
   }
   return { rows, availableSize, pointerSize };
+}
+
+/**
+ * Expand pointer-sized DataRow values into fixed-width debugger memory lines.
+ * The requested range is retained even when the target returned only a prefix,
+ * so unread bytes remain visible as explicit `--` cells in the UI.
+ */
+export function memoryRegionRows(view: MemoryViewRecord): MemoryRegionRow[] {
+  const pointerSize = view.pointerSize === 4 ? 4 : 8;
+  const start = parseAddress(view.address);
+  if (start === null) return [];
+
+  const bytes = new Map<bigint, number>();
+  let highestOffset = 0;
+  for (const row of view.data) {
+    const rowAddress = parseAddress(row.address);
+    const rowOffset = parseAddress(row.offset);
+    const address = rowAddress ?? (rowOffset === null ? null : start + rowOffset);
+    if (address === null) continue;
+    const decoded = unrestrictedRowBytes(row, pointerSize);
+    decoded.forEach((byte, index) => {
+      const target = address + BigInt(index);
+      if (target < start) return;
+      const offset = target - start;
+      if (offset > BigInt(MAX_MEMORY_REGION_BYTES)) return;
+      bytes.set(target, byte & 0xff);
+      highestOffset = Math.max(highestOffset, Number(offset) + 1);
+    });
+  }
+
+  const requested = Number.isFinite(view.requestedSize) && view.requestedSize > 0
+    ? Math.trunc(view.requestedSize)
+    : Math.max(0, Math.trunc(view.availableSize), highestOffset);
+  const size = Math.min(MAX_MEMORY_REGION_BYTES, Math.max(0, requested));
+  if (size === 0) return [];
+
+  const rows: MemoryRegionRow[] = [];
+  for (let offset = 0; offset < size; offset += 16) {
+    const cells = Array.from({ length: 16 }, (_, index) => {
+      const cellOffset = offset + index;
+      return {
+        value: cellOffset < size ? bytes.get(start + BigInt(cellOffset)) ?? null : null,
+        inRange: cellOffset < size,
+      };
+    });
+    rows.push({
+      offset,
+      address: regionAddress(start + BigInt(offset), pointerSize),
+      cells,
+    });
+  }
+  return rows;
 }
 
 export function normaliseMemoryView(value: unknown, fallbackType: ChunkViewType): MemoryViewRecord | null {

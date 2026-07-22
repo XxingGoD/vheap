@@ -54,6 +54,7 @@ import {
 import { buildGraph, layoutGraph } from "./graph";
 import { Inspector } from "./Inspector";
 import { MemoryNode } from "./MemoryNode";
+import { MemoryRegionView } from "./MemoryRegionView";
 import { StructureNode } from "./StructureNode";
 import { CHUNK_VIEW_OPTIONS, viewExpectedSize } from "./structViews";
 import type { ChunkViewType, HeapEdge, HeapNode, HeapSnapshot, MemoryViewRecord, SelectedItem } from "./types";
@@ -119,6 +120,8 @@ export default function App() {
   const [memorySizeInput, setMemorySizeInput] = useState("");
   const [memoryFormError, setMemoryFormError] = useState<string | null>(null);
   const [memoryBusy, setMemoryBusy] = useState(false);
+  const [memoryPanelOpen, setMemoryPanelOpen] = useState(false);
+  const [memoryPanelViewId, setMemoryPanelViewId] = useState<string | null>(null);
   const pointerSize = snapshot.pointerSize === 4 ? 4 : 8;
   const socketRef = useRef<Socket | null>(null);
   const lastPayloadRef = useRef<string>("");
@@ -142,6 +145,17 @@ export default function App() {
     memoryViewsRef.current = memoryViews;
   }, [memoryViews]);
 
+  useEffect(() => {
+    if (memoryViews.length === 0) {
+      if (memoryPanelViewId !== null) setMemoryPanelViewId(null);
+      if (memoryPanelOpen) setMemoryPanelOpen(false);
+      return;
+    }
+    if (!memoryPanelViewId || !memoryViews.some((view) => view.id === memoryPanelViewId)) {
+      setMemoryPanelViewId(memoryViews[0].id);
+    }
+  }, [memoryPanelOpen, memoryPanelViewId, memoryViews]);
+
   const upsertMemoryView = useCallback((record: MemoryViewRecord) => {
     setMemoryViews((previous) => {
       const index = previous.findIndex((view) => view.id === record.id);
@@ -155,6 +169,10 @@ export default function App() {
   const selectNode = useCallback((id: string) => {
     setSelectedId(id);
     setInspectorOpen(true);
+    if (id.startsWith("memory:") || memoryViewsRef.current.some((view) => view.id === id)) {
+      setMemoryPanelViewId(id);
+      setMemoryPanelOpen(true);
+    }
   }, []);
 
   const handleMemoryData = useCallback((payload: unknown) => {
@@ -377,6 +395,20 @@ export default function App() {
     return itemFromNode(graphNode);
   }, [graphModel, selectedId]);
 
+  const activeMemoryView = useMemo(() => {
+    if (memoryPanelViewId) {
+      const selectedView = memoryViews.find((view) => view.id === memoryPanelViewId);
+      if (selectedView) return selectedView;
+    }
+    if (selected?.kind === "memory") return selected.memoryView;
+    return memoryViews[0] ?? null;
+  }, [memoryPanelViewId, memoryViews, selected]);
+
+  const refreshActiveMemoryView = useCallback(() => {
+    if (!activeMemoryView) return;
+    requestMemoryView(activeMemoryView.address, activeMemoryView.type, activeMemoryView.requestedSize, false);
+  }, [activeMemoryView, requestMemoryView]);
+
   useEffect(() => {
     let active = true;
     layoutGraph(graphModel.nodes, graphModel.edges, direction, compactLayout).then((positioned) => {
@@ -501,7 +533,22 @@ export default function App() {
         <main className="canvas-shell">
           <div className="canvas-toolbar">
             <div className="toolbar-title"><Activity size={15} /><span>{query ? `matching "${query}"` : "allocator graph"}</span></div>
-            <div className="toolbar-actions"><button className={`live-button ${live ? "is-live" : ""}`} type="button" disabled={DEMO_MODE} onClick={() => setLive((value) => !value)}>{live ? <Pause size={13} /> : <Play size={13} />}{DEMO_MODE ? "demo" : live ? "polling" : "paused"}</button></div>
+            <div className="toolbar-actions">
+              <button
+                className={`live-button memory-panel-toggle ${memoryPanelOpen ? "is-live" : ""}`}
+                type="button"
+                disabled={memoryViews.length === 0}
+                onClick={() => {
+                  if (!memoryPanelViewId && memoryViews[0]) setMemoryPanelViewId(memoryViews[0].id);
+                  setMemoryPanelOpen((open) => !open);
+                }}
+                title={memoryPanelOpen ? "Hide memory region" : "Show memory region"}
+                aria-label={memoryPanelOpen ? "Hide memory region" : "Show memory region"}
+              >
+                <Binary size={13} /> memory
+              </button>
+              <button className={`live-button ${live ? "is-live" : ""}`} type="button" disabled={DEMO_MODE} onClick={() => setLive((value) => !value)}>{live ? <Pause size={13} /> : <Play size={13} />}{DEMO_MODE ? "demo" : live ? "polling" : "paused"}</button>
+            </div>
           </div>
           {error && <div className="error-banner"><AlertTriangle size={15} /><span>{error}</span><button type="button" onClick={() => setError(null)} title="Dismiss" aria-label="Dismiss error"><X size={14} /></button></div>}
           <div className="flow-stage">
@@ -535,6 +582,16 @@ export default function App() {
               </ReactFlow>
             )}
           </div>
+          {memoryPanelOpen && activeMemoryView && (
+            <MemoryRegionView
+              view={activeMemoryView}
+              views={memoryViews}
+              busy={memoryBusy}
+              onSelectView={(id) => selectNode(id)}
+              onRefresh={refreshActiveMemoryView}
+              onClose={() => setMemoryPanelOpen(false)}
+            />
+          )}
         </main>
 
         {inspectorOpen && <Inspector item={selected} onClose={() => { setInspectorOpen(false); setSelectedId(null); }} onRemoveMemoryView={removeMemoryView} />}
