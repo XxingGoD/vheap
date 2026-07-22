@@ -482,6 +482,7 @@ class VisualHeap:
                     "requestId": request_id,
                     "address": payload.get("address"),
                     "type": payload.get("type"),
+                    "name": payload.get("name"),
                     "requestedSize": size or 0,
                     "availableSize": 0,
                     "data": [],
@@ -537,6 +538,7 @@ class VisualHeap:
 
             result["requestId"] = request_id
             result["type"] = payload.get("type")
+            result["name"] = payload.get("name")
             await self.sio.emit("memoryData", result, to=sid)
 
         # Create http server, and socket io

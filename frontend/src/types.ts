@@ -87,6 +87,8 @@ export interface ManagementStructure {
 /** A user-requested address range interpreted as one registered structure. */
 export interface MemoryViewRecord {
   id: string;
+  /** User-facing alias for this address range or typed structure. */
+  name?: string;
   address: string;
   type: MemoryViewType;
   pointerSize: number;

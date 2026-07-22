@@ -252,6 +252,7 @@ export function buildGraph(snapshot: HeapSnapshot, options: GraphBuildOptions): 
   const memoryViews = (options.memoryViews ?? []).filter((view) =>
     nodeMatches(query, [
       view.id,
+      view.name ?? "",
       view.address,
       view.type,
       String(view.requestedSize),
@@ -269,7 +270,7 @@ export function buildGraph(snapshot: HeapSnapshot, options: GraphBuildOptions): 
     const data: MemoryNodeData = {
       kind: "memory",
       graphId,
-      label: `${memoryViewOption(view.type).label} @ ${view.address}`,
+      label: `${view.name?.trim() || memoryViewOption(view.type).label} @ ${view.address}`,
       expanded,
       memoryView: view,
       onToggle: options.onToggle,

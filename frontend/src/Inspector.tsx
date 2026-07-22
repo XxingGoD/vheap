@@ -1,5 +1,5 @@
 import { AlertTriangle, Binary, Clipboard, Code2, Database, ExternalLink, FileJson, Trash2, X } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { chunkBaseAddress, dataRows, fieldRows, formatHex } from "./data";
 import { CHUNK_VIEW_OPTIONS, chunkViewOption, isTypedMemoryView, memoryViewOption, reinterpretChunk, reinterpretMemoryRows } from "./structViews";
@@ -9,6 +9,7 @@ interface InspectorProps {
   item: SelectedItem | null;
   onClose: () => void;
   onRemoveMemoryView: (id: string) => void;
+  onRenameMemoryView: (id: string, name: string) => void;
 }
 
 function value(value: string | undefined): string {
@@ -19,7 +20,7 @@ function copyValue(raw: string): void {
   if (typeof navigator !== "undefined" && navigator.clipboard) void navigator.clipboard.writeText(raw);
 }
 
-export function Inspector({ item, onClose, onRemoveMemoryView }: InspectorProps) {
+export function Inspector({ item, onClose, onRemoveMemoryView, onRenameMemoryView }: InspectorProps) {
   const [chunkViewTypes, setChunkViewTypes] = useState<Record<string, ChunkViewType>>({});
   return (
     <aside className={`inspector ${item ? "has-selection" : ""}`} aria-label="Inspector">
@@ -41,7 +42,7 @@ export function Inspector({ item, onClose, onRemoveMemoryView }: InspectorProps)
       ) : item.kind === "structure" ? (
         <StructureInspector item={item} />
       ) : item.kind === "memory" ? (
-        <MemoryInspector item={item} onRemove={onRemoveMemoryView} />
+        <MemoryInspector item={item} onRemove={onRemoveMemoryView} onRename={onRenameMemoryView} />
       ) : (
         <HeadInspector item={item} />
       )}
@@ -152,21 +153,58 @@ function TypedField({ field }: { field: ChunkViewField }) {
 function MemoryInspector({
   item,
   onRemove,
+  onRename,
 }: {
   item: Extract<SelectedItem, { kind: "memory" }>;
   onRemove: (id: string) => void;
+  onRename: (id: string, name: string) => void;
 }) {
   const { memoryView } = item;
   const interpreted = isTypedMemoryView(memoryView.type)
     ? reinterpretMemoryRows(memoryView.data, memoryView.type, memoryView.pointerSize, memoryView.dataTruncated)
     : null;
   const visibleRows = memoryView.data.slice(0, 96);
+  const [nameInput, setNameInput] = useState(memoryView.name ?? "");
+  const skipNameBlur = useRef(false);
+  useEffect(() => setNameInput(memoryView.name ?? ""), [memoryView.id, memoryView.name]);
+  const commitName = () => {
+    if (skipNameBlur.current) {
+      skipNameBlur.current = false;
+      return;
+    }
+    onRename(memoryView.id, nameInput.trim());
+  };
+  const option = memoryViewOption(memoryView.type);
+  const displayName = memoryView.name?.trim() || option.label;
   return (
     <div className="inspector-content">
-      <div className="inspector-heading"><span className="node-kind">memory</span><h2>{memoryViewOption(memoryView.type).label}</h2></div>
+      <div className="inspector-heading"><span className="node-kind">memory</span><h2>{displayName}</h2></div>
       <div className="inspector-subtitle">{value(memoryView.address)}</div>
       <div className="memory-inspector-actions">
-        <span className="memory-source-label">raw address view</span>
+        <label className="memory-source-label" htmlFor="memory-inspector-name">name</label>
+        <input
+          id="memory-inspector-name"
+          className="memory-name-input"
+          value={nameInput}
+          onChange={(event) => setNameInput(event.target.value)}
+          onBlur={commitName}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              commitName();
+              event.currentTarget.blur();
+            }
+            if (event.key === "Escape") {
+              skipNameBlur.current = true;
+              setNameInput(memoryView.name ?? "");
+              event.currentTarget.blur();
+            }
+          }}
+          placeholder={option.label}
+          spellCheck={false}
+          autoComplete="off"
+          aria-label="Memory view name"
+        />
         <button className="remove-memory-button" type="button" onClick={() => onRemove(memoryView.id)}><Trash2 size={13} /> remove view</button>
       </div>
       <div className="copy-grid">

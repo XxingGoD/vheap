@@ -18,6 +18,7 @@ export function MemoryNode({ data, selected }: MemoryNodeProps) {
     ? reinterpretMemoryRows(memoryView.data, memoryView.type, memoryView.pointerSize, memoryView.dataTruncated)
     : null;
   const option = memoryViewOption(memoryView.type);
+  const name = memoryView.name?.trim() || option.label;
   const toggle = (event: MouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
     data.onToggle(graphId);
@@ -36,9 +37,10 @@ export function MemoryNode({ data, selected }: MemoryNodeProps) {
         if (event.key === "Enter" || event.key === " ") select();
       }} title="Select memory view">
         <span className="node-kind"><Binary size={13} strokeWidth={1.8} /> memory</span>
-        <span className="memory-type">{memoryView.type}</span>
+        <span className="memory-type">{name}</span>
+        {memoryView.name && <span className="memory-view-kind">{option.label}</span>}
         <span className="node-address">{display(memoryView.address)}</span>
-        <button className="memory-remove" type="button" onClick={remove} title="Remove memory view" aria-label={`Remove ${memoryView.type} memory view`}><Trash2 size={12} /></button>
+        <button className="memory-remove" type="button" onClick={remove} title="Remove memory view" aria-label={`Remove ${name} memory view`}><Trash2 size={12} /></button>
       </div>
 
       <div className="memory-summary" onClick={select} role="button" tabIndex={0} onKeyDown={(event) => {

@@ -205,9 +205,10 @@ http://127.0.0.1:8080
 ### 任意地址 memory view
 
 1. 在左侧 `memory views` 区域输入十六进制或十进制地址；支持 `0x7ffff...`、裸十六进制（如 `7ffff7dd18c0`）和十进制。
-2. `interpretation` 默认是 `raw memory dump`，不需要选择或创建结构体；这会直接查看地址范围内的原始字节。
-3. 可选地填写读取字节数；raw dump 默认读取 `0x100` 字节，选择结构体时默认使用该布局的预期大小。
-4. 点击 `open dump`。只有主动选择 `malloc_chunk`、`_IO_FILE` 等布局时，按钮才会变为 `parse address` 并显示字段解释。
+2. 可选填写 `name`，名称会显示在主图、memory 列表、Dump 标题和 Inspector 中，也可以在 Inspector 内后改名。
+3. `interpretation` 默认是 `raw memory dump`，不需要选择或创建结构体；这会直接查看地址范围内的原始字节。
+4. 可选地填写读取字节数；raw dump 默认读取 `0x100` 字节，选择结构体时默认使用该布局的预期大小。
+5. 点击 `open dump`。只有主动选择 `malloc_chunk`、`_IO_FILE` 等布局时，按钮才会变为 `parse address` 并显示字段解释。
 
 raw dump 和 typed view 都会在主图创建一个 memory 节点并打开底部 memory panel；raw dump 不解析结构字段，也不会生成 typed pointer 边。同一个地址和类型再次提交时会更新原节点，不会创建重复节点。实时读取发出后会立即打开 memory panel；GDB 超时、断线或拒绝读取时，错误会保留在该视图中并可以重新刷新。
 

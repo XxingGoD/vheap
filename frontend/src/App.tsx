@@ -75,6 +75,7 @@ interface PendingMemoryRequest {
   id: string;
   address: string;
   type: MemoryViewType;
+  name?: string;
   requestedSize: number;
   select: boolean;
   timer: number;
@@ -99,6 +100,10 @@ function formatAge(date: Date | null): string {
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
+function memoryViewName(view: MemoryViewRecord): string {
+  return view.name?.trim() || memoryViewOption(view.type).label;
+}
+
 export default function App() {
   const [snapshot, setSnapshot] = useState<HeapSnapshot>(() => DEMO_MODE ? demoSnapshot() : EMPTY_SNAPSHOT);
   const [visibleBins, setVisibleBins] = useState<Set<string>>(() => new Set(DEMO_MODE ? [...displayBinNames(demoSnapshot()), "allocated"] : []));
@@ -118,6 +123,7 @@ export default function App() {
   const [compactLayout, setCompactLayout] = useState(() => typeof window !== "undefined" && window.innerWidth < 700);
   const [memoryViews, setMemoryViews] = useState<MemoryViewRecord[]>([]);
   const [memoryAddressInput, setMemoryAddressInput] = useState("");
+  const [memoryNameInput, setMemoryNameInput] = useState("");
   const [memoryTypeInput, setMemoryTypeInput] = useState<MemoryViewType>("raw_memory");
   const [memorySizeInput, setMemorySizeInput] = useState("");
   const [memoryFormError, setMemoryFormError] = useState<string | null>(null);
@@ -186,6 +192,7 @@ export default function App() {
     setMemoryBusy(pendingMemoryRequests.current.size > 0);
     setMemoryViews((previous) => previous.map((view) => view.id === pending.id ? {
       ...view,
+      ...(pending.name ? { name: pending.name } : {}),
       address: pending.address,
       type: pending.type,
       pointerSize: pointerSizeRef.current,
@@ -210,6 +217,7 @@ export default function App() {
     const response = {
       ...payload,
       id: pending.id,
+      name: payload.name ?? pending.name,
       address: payload.address ?? pending.address,
       type: payload.type ?? pending.type,
       pointerSize: payload.pointerSize ?? pointerSizeRef.current,
@@ -229,7 +237,7 @@ export default function App() {
     if (pending.select) selectNode(record.id);
   }, [selectNode, upsertMemoryView]);
 
-  const requestMemoryView = useCallback((addressInput: string, type: MemoryViewType, requestedSize: number, select = true, replaceId?: string) => {
+  const requestMemoryView = useCallback((addressInput: string, type: MemoryViewType, requestedSize: number, select = true, replaceId?: string, name?: string) => {
     const parsedAddress = parseAddress(addressInput);
     if (parsedAddress === null) {
       setMemoryFormError("enter a hexadecimal or decimal address");
@@ -241,11 +249,14 @@ export default function App() {
     }
     const address = canonicalAddress(parsedAddress);
     const id = replaceId ?? memoryViewId(address, type);
+    const existingView = replaceId ? memoryViewsRef.current.find((view) => view.id === replaceId) : undefined;
+    const viewName = name?.trim() || existingView?.name?.trim() || undefined;
 
     if (DEMO_MODE) {
       const read = readSnapshotMemory(snapshotRef.current, parsedAddress, requestedSize);
       upsertMemoryView({
         id,
+        ...(viewName ? { name: viewName } : {}),
         address,
         type,
         pointerSize: read.pointerSize,
@@ -276,6 +287,7 @@ export default function App() {
       id,
       address,
       type,
+      ...(viewName ? { name: viewName } : {}),
       requestedSize,
       select,
       timer: window.setTimeout(() => {
@@ -286,6 +298,7 @@ export default function App() {
     setMemoryBusy(true);
     upsertMemoryView({
       id,
+      ...(viewName ? { name: viewName } : {}),
       address,
       type,
       pointerSize: pointerSizeRef.current,
@@ -297,7 +310,7 @@ export default function App() {
     });
     setMemoryFormError(null);
     if (select) selectNode(id);
-    socket.emit("readMemory", { requestId, address, type, size: requestedSize });
+    socket.emit("readMemory", { requestId, address, type, size: requestedSize, ...(viewName ? { name: viewName } : {}) });
   }, [markMemoryRequestError, selectNode, upsertMemoryView]);
 
   const removeMemoryView = useCallback((id: string) => {
@@ -310,6 +323,17 @@ export default function App() {
       }
     }
     setMemoryBusy(pendingMemoryRequests.current.size > 0);
+  }, []);
+
+  const renameMemoryView = useCallback((id: string, name: string) => {
+    setMemoryViews((previous) => previous.map((view) => {
+      if (view.id !== id) return view;
+      const trimmed = name.trim();
+      return trimmed ? { ...view, name: trimmed } : (() => {
+        const { name: _name, ...withoutName } = view;
+        return withoutName;
+      })();
+    }));
   }, []);
 
   const refreshMemoryViews = useCallback(() => {
@@ -416,8 +440,8 @@ export default function App() {
       }
       requestedSize = Number(parsedSize);
     }
-    requestMemoryView(canonicalAddress(address), memoryTypeInput, requestedSize, true);
-  }, [memoryAddressInput, memorySizeInput, memoryTypeInput, requestMemoryView, selectedMemoryExpectedSize]);
+    requestMemoryView(canonicalAddress(address), memoryTypeInput, requestedSize, true, undefined, memoryNameInput.trim() || undefined);
+  }, [memoryAddressInput, memoryNameInput, memorySizeInput, memoryTypeInput, requestMemoryView, selectedMemoryExpectedSize]);
 
   const toggleNode = useCallback((id: string) => {
     setExpanded((previous) => {
@@ -555,6 +579,8 @@ export default function App() {
             <form className="memory-form" onSubmit={submitMemoryView}>
               <label className="memory-form-label" htmlFor="memory-address">address</label>
               <input ref={memoryAddressRef} id="memory-address" className="memory-input" value={memoryAddressInput} onChange={(event) => setMemoryAddressInput(event.target.value)} placeholder="0x7ffff7dd18c0" spellCheck={false} autoComplete="off" />
+              <label className="memory-form-label" htmlFor="memory-name">name <span>(optional)</span></label>
+              <input id="memory-name" className="memory-input" value={memoryNameInput} onChange={(event) => setMemoryNameInput(event.target.value)} placeholder="e.g. stdout_file" spellCheck={false} autoComplete="off" />
               <label className="memory-form-label" htmlFor="memory-type">interpretation <span>(optional)</span></label>
               <select id="memory-type" className="memory-input" value={memoryTypeInput} onChange={(event) => setMemoryTypeInput(event.target.value as MemoryViewType)}>
                 {MEMORY_VIEW_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
@@ -569,9 +595,9 @@ export default function App() {
               {memoryViews.map((view) => (
                 <div className="memory-view-item" key={view.id}>
                   <button type="button" className="memory-view-select" onClick={() => selectNode(view.id)} title="Select memory view">
-                    <span className="memory-view-type">{memoryViewOption(view.type).label}</span><code>{view.address}</code><small>{view.availableSize}/{view.requestedSize} B</small>
+                    <span className="memory-view-type">{memoryViewName(view)}</span><code>{memoryViewOption(view.type).label} · {view.address}</code><small>{view.availableSize}/{view.requestedSize} B</small>
                   </button>
-                  <button type="button" className="mini-icon memory-view-remove" onClick={() => removeMemoryView(view.id)} title="Remove memory view" aria-label={`Remove ${memoryViewOption(view.type).label} at ${view.address}`}><X size={12} /></button>
+                  <button type="button" className="mini-icon memory-view-remove" onClick={() => removeMemoryView(view.id)} title="Remove memory view" aria-label={`Remove ${memoryViewName(view)} at ${view.address}`}><X size={12} /></button>
                 </div>
               ))}
             </div>}
@@ -656,7 +682,7 @@ export default function App() {
           )}
         </main>
 
-        {inspectorOpen && <Inspector item={selected} onClose={() => { setInspectorOpen(false); setSelectedId(null); }} onRemoveMemoryView={removeMemoryView} />}
+        {inspectorOpen && <Inspector item={selected} onClose={() => { setInspectorOpen(false); setSelectedId(null); }} onRemoveMemoryView={removeMemoryView} onRenameMemoryView={renameMemoryView} />}
       </div>
       {!sidebarOpen && <button className="mobile-filter-fab" type="button" onClick={() => setSidebarOpen(true)} title="Open filters" aria-label="Open filters"><Filter size={17} /></button>}
     </div>

@@ -593,6 +593,7 @@ export function normaliseMemoryView(value: unknown, fallbackType: MemoryViewType
     : [];
   return {
     id: text(value.id, memoryViewId(address, type)),
+    ...(typeof value.name === "string" && value.name.trim() ? { name: value.name.trim() } : {}),
     address,
     type,
     pointerSize,

@@ -142,6 +142,7 @@ export function MemoryRegionView({
         <div className="memory-region-heading">
           <Binary size={15} />
           <span className="memory-region-title">memory dump</span>
+          {view.name && <span className="memory-region-name">{view.name}</span>}
           <code>{view.address}</code>
           <span className={`memory-region-state ${state.className}`}>{state.label}</span>
         </div>
@@ -153,7 +154,7 @@ export function MemoryRegionView({
               onChange={(event) => onSelectView(event.target.value)}
               aria-label="Select memory view"
             >
-              {views.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.address} / {memoryViewOption(candidate.type).label}</option>)}
+              {views.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name?.trim() || memoryViewOption(candidate.type).label} / {candidate.address}</option>)}
             </select>
           )}
           <button className="icon-button" type="button" onClick={onRefresh} disabled={!onRefresh || busy} title="Refresh memory dump" aria-label="Refresh memory dump">

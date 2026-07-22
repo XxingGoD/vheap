@@ -37,9 +37,10 @@ without reading payload memory.
 
 The TypeScript frontend keeps user-created address dumps in `MemoryViewRecord`
 values. A record contains the canonical `address`, selected `type`, target
-`pointerSize`, requested/available byte counts, and the same `DataRow[]` format
-used by chunk payloads. `type: "raw_memory"` is the default and only displays
-bytes; a `ChunkViewType` such as `io_file` opts into field decoding and typed
+`pointerSize`, optional user-facing `name`, requested/available byte counts,
+and the same `DataRow[]` format used by chunk payloads. `type: "raw_memory"`
+is the default and only displays bytes; a `ChunkViewType` such as `io_file`
+opts into field decoding and typed
 pointer edges. `frontend/src/graph.ts` adds each record as a `memory` node and
 resolves typed pointer fields against chunk, management-structure, and other
 memory-node address indexes.
