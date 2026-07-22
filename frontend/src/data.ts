@@ -168,8 +168,26 @@ export function normaliseChunk(value: unknown, fallbackIndex: number, defaultPoi
 export function normaliseStructure(value: unknown, fallbackIndex: number): ManagementStructure {
   const raw = isRecord(value) ? value : {};
   const rawFields = parseEmbeddedJson(firstDefined(raw, "fields", "members", "values", "fieldList", "field_list"));
+  const fieldKeys = isRecord(rawFields) ? Object.keys(rawFields) : [];
+  const fieldMetadataKeys = new Set([
+    "name",
+    "field",
+    "fieldName",
+    "field_name",
+    "value",
+    "val",
+    "fieldValue",
+    "field_value",
+    "target",
+    "pointer",
+    "targetAddress",
+    "target_address",
+    "port",
+    "handle",
+  ]);
   const singleField = isRecord(rawFields) &&
-    firstDefined(rawFields, "value", "val", "fieldValue", "field_value", "target", "pointer", "targetAddress", "target_address") !== undefined;
+    fieldKeys.every((key) => fieldMetadataKeys.has(key)) &&
+    fieldKeys.some((key) => ["value", "val", "fieldValue", "field_value", "target", "pointer", "targetAddress", "target_address"].includes(key));
   const fieldValues = Array.isArray(rawFields)
     ? rawFields
     : singleField
