@@ -56,8 +56,8 @@ import { Inspector } from "./Inspector";
 import { MemoryNode } from "./MemoryNode";
 import { MemoryRegionView } from "./MemoryRegionView";
 import { StructureNode } from "./StructureNode";
-import { CHUNK_VIEW_OPTIONS, viewExpectedSize } from "./structViews";
-import type { ChunkViewType, HeapEdge, HeapNode, HeapSnapshot, MemoryViewRecord, SelectedItem } from "./types";
+import { MEMORY_VIEW_OPTIONS, isTypedMemoryView, memoryViewExpectedSize, memoryViewOption } from "./structViews";
+import type { HeapEdge, HeapNode, HeapSnapshot, MemoryViewRecord, MemoryViewType, SelectedItem } from "./types";
 
 const nodeTypes: NodeTypes = {
   chunk: ChunkNode,
@@ -74,7 +74,7 @@ const MEMORY_REQUEST_TIMEOUT_MS = 10000;
 interface PendingMemoryRequest {
   id: string;
   address: string;
-  type: ChunkViewType;
+  type: MemoryViewType;
   requestedSize: number;
   select: boolean;
   timer: number;
@@ -118,7 +118,7 @@ export default function App() {
   const [compactLayout, setCompactLayout] = useState(() => typeof window !== "undefined" && window.innerWidth < 700);
   const [memoryViews, setMemoryViews] = useState<MemoryViewRecord[]>([]);
   const [memoryAddressInput, setMemoryAddressInput] = useState("");
-  const [memoryTypeInput, setMemoryTypeInput] = useState<ChunkViewType>("malloc_chunk");
+  const [memoryTypeInput, setMemoryTypeInput] = useState<MemoryViewType>("raw_memory");
   const [memorySizeInput, setMemorySizeInput] = useState("");
   const [memoryFormError, setMemoryFormError] = useState<string | null>(null);
   const [memoryBusy, setMemoryBusy] = useState(false);
@@ -137,7 +137,7 @@ export default function App() {
   const memoryAddressRef = useRef<HTMLInputElement | null>(null);
   const deferredQuery = useDeferredValue(query);
 
-  const selectedMemoryExpectedSize = viewExpectedSize(memoryTypeInput, pointerSize);
+  const selectedMemoryExpectedSize = memoryViewExpectedSize(memoryTypeInput, pointerSize);
 
   useEffect(() => {
     snapshotRef.current = snapshot;
@@ -229,7 +229,7 @@ export default function App() {
     if (pending.select) selectNode(record.id);
   }, [selectNode, upsertMemoryView]);
 
-  const requestMemoryView = useCallback((addressInput: string, type: ChunkViewType, requestedSize: number, select = true, replaceId?: string) => {
+  const requestMemoryView = useCallback((addressInput: string, type: MemoryViewType, requestedSize: number, select = true, replaceId?: string) => {
     const parsedAddress = parseAddress(addressInput);
     if (parsedAddress === null) {
       setMemoryFormError("enter a hexadecimal or decimal address");
@@ -555,23 +555,23 @@ export default function App() {
             <form className="memory-form" onSubmit={submitMemoryView}>
               <label className="memory-form-label" htmlFor="memory-address">address</label>
               <input ref={memoryAddressRef} id="memory-address" className="memory-input" value={memoryAddressInput} onChange={(event) => setMemoryAddressInput(event.target.value)} placeholder="0x7ffff7dd18c0" spellCheck={false} autoComplete="off" />
-              <label className="memory-form-label" htmlFor="memory-type">structure type</label>
-              <select id="memory-type" className="memory-input" value={memoryTypeInput} onChange={(event) => setMemoryTypeInput(event.target.value as ChunkViewType)}>
-                {CHUNK_VIEW_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+              <label className="memory-form-label" htmlFor="memory-type">interpretation <span>(optional)</span></label>
+              <select id="memory-type" className="memory-input" value={memoryTypeInput} onChange={(event) => setMemoryTypeInput(event.target.value as MemoryViewType)}>
+                {MEMORY_VIEW_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
               </select>
               <label className="memory-form-label" htmlFor="memory-size">read bytes <span>(optional)</span></label>
               <input id="memory-size" className="memory-input" value={memorySizeInput} onChange={(event) => setMemorySizeInput(event.target.value)} placeholder={String(selectedMemoryExpectedSize)} inputMode="text" spellCheck={false} />
-              <div className="memory-form-meta">layout {selectedMemoryExpectedSize} B · {pointerSize * 8}-bit target</div>
+              <div className="memory-form-meta">{isTypedMemoryView(memoryTypeInput) ? `layout ${selectedMemoryExpectedSize} B` : `raw page ${selectedMemoryExpectedSize} B`} · {pointerSize * 8}-bit target</div>
               {memoryFormError && <div className="memory-form-error"><AlertTriangle size={12} /><span>{memoryFormError}</span></div>}
-              <button className="memory-submit" type="submit" disabled={memoryBusy && !DEMO_MODE}><Plus size={14} />{memoryBusy ? "reading..." : "parse address"}</button>
+              <button className="memory-submit" type="submit" disabled={memoryBusy && !DEMO_MODE}><Plus size={14} />{memoryBusy ? "reading..." : isTypedMemoryView(memoryTypeInput) ? "parse address" : "open dump"}</button>
             </form>
             {memoryViews.length > 0 && <div className="memory-view-list">
               {memoryViews.map((view) => (
                 <div className="memory-view-item" key={view.id}>
                   <button type="button" className="memory-view-select" onClick={() => selectNode(view.id)} title="Select memory view">
-                    <span className="memory-view-type">{view.type}</span><code>{view.address}</code><small>{view.availableSize}/{view.requestedSize} B</small>
+                    <span className="memory-view-type">{memoryViewOption(view.type).label}</span><code>{view.address}</code><small>{view.availableSize}/{view.requestedSize} B</small>
                   </button>
-                  <button type="button" className="mini-icon memory-view-remove" onClick={() => removeMemoryView(view.id)} title="Remove memory view" aria-label={`Remove ${view.type} at ${view.address}`}><X size={12} /></button>
+                  <button type="button" className="mini-icon memory-view-remove" onClick={() => removeMemoryView(view.id)} title="Remove memory view" aria-label={`Remove ${memoryViewOption(view.type).label} at ${view.address}`}><X size={12} /></button>
                 </div>
               ))}
             </div>}

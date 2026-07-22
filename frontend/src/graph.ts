@@ -11,7 +11,7 @@ import {
   parseAddress,
   searchMatches,
 } from "./data";
-import { reinterpretMemoryRows } from "./structViews";
+import { isTypedMemoryView, memoryViewOption, reinterpretMemoryRows } from "./structViews";
 import type {
   BinHeadNodeData,
   ChunkNodeData,
@@ -76,8 +76,10 @@ function memoryWidth(expanded: boolean): number {
 
 function memoryHeight(view: MemoryViewRecord, expanded: boolean): number {
   if (!expanded) return 96;
-  const interpretation = reinterpretMemoryRows(view.data, view.type, view.pointerSize, view.dataTruncated);
-  return 132 + Math.min(interpretation.fields.length, 10) * 23 + (view.error ? 30 : 0) + (interpretation.truncated ? 28 : 0);
+  const interpretation = isTypedMemoryView(view.type)
+    ? reinterpretMemoryRows(view.data, view.type, view.pointerSize, view.dataTruncated)
+    : null;
+  return 132 + Math.min(interpretation?.fields.length ?? 0, 10) * 23 + (view.error ? 30 : 0) + (interpretation?.truncated ? 28 : 0);
 }
 
 function graphNodeId(value: string): string {
@@ -255,7 +257,9 @@ export function buildGraph(snapshot: HeapSnapshot, options: GraphBuildOptions): 
       String(view.requestedSize),
       String(view.availableSize),
       ...view.data.flatMap((row) => [row.offset, row.address, row.value, row.bytes ?? "", row.ascii ?? ""]),
-      ...reinterpretMemoryRows(view.data, view.type, view.pointerSize, view.dataTruncated).fields.flatMap((field) => [field.name, field.value]),
+      ...(isTypedMemoryView(view.type)
+        ? reinterpretMemoryRows(view.data, view.type, view.pointerSize, view.dataTruncated).fields.flatMap((field) => [field.name, field.value])
+        : []),
     ]),
   );
 
@@ -265,7 +269,7 @@ export function buildGraph(snapshot: HeapSnapshot, options: GraphBuildOptions): 
     const data: MemoryNodeData = {
       kind: "memory",
       graphId,
-      label: `${view.type} @ ${view.address}`,
+      label: `${memoryViewOption(view.type).label} @ ${view.address}`,
       expanded,
       memoryView: view,
       onToggle: options.onToggle,
@@ -280,7 +284,7 @@ export function buildGraph(snapshot: HeapSnapshot, options: GraphBuildOptions): 
       style: { width: memoryWidth(expanded), height: memoryHeight(view, expanded) },
       draggable: true,
     });
-    addAddress(memoryAddressIndex, view.address, graphId);
+    if (isTypedMemoryView(view.type)) addAddress(memoryAddressIndex, view.address, graphId);
   }
 
   const nodeIds = new Set(nodes.map((node) => node.id));
@@ -318,6 +322,7 @@ export function buildGraph(snapshot: HeapSnapshot, options: GraphBuildOptions): 
   }
 
   for (const view of memoryViews) {
+    if (!isTypedMemoryView(view.type)) continue;
     const source = graphNodeId(view.id);
     const interpretation = reinterpretMemoryRows(view.data, view.type, view.pointerSize, view.dataTruncated);
     for (const field of interpretation.fields) {

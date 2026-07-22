@@ -13,6 +13,7 @@ import {
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 
 import { canonicalAddress, memoryRegionRows, parseAddress } from "./data";
+import { memoryViewOption } from "./structViews";
 import type { MemoryRegionCell, MemoryViewRecord } from "./types";
 
 const MAX_ADDRESS = 0xffffffffffffffffn;
@@ -152,7 +153,7 @@ export function MemoryRegionView({
               onChange={(event) => onSelectView(event.target.value)}
               aria-label="Select memory view"
             >
-              {views.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.address} / {candidate.type}</option>)}
+              {views.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.address} / {memoryViewOption(candidate.type).label}</option>)}
             </select>
           )}
           <button className="icon-button" type="button" onClick={onRefresh} disabled={!onRefresh || busy} title="Refresh memory dump" aria-label="Refresh memory dump">
@@ -184,7 +185,7 @@ export function MemoryRegionView({
           <div className="memory-region-meta">
             <span><b>range</b> {view.address} - {rangeEnd(view)}</span>
             <span><b>read</b> {view.availableSize} / {view.requestedSize} B</span>
-            <span><b>type</b> {view.type}</span>
+            <span><b>type</b> {memoryViewOption(view.type).label}</span>
             <span><b>source</b> {view.source ?? "-"}</span>
           </div>
           {view.error && <div className="memory-region-error"><AlertTriangle size={13} /><span>{view.error}</span></div>}

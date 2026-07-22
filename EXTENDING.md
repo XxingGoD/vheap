@@ -35,17 +35,19 @@ without reading payload memory.
 
 ## Address memory views
 
-The TypeScript frontend keeps user-created address interpretations in
-`MemoryViewRecord` values. A record contains the canonical `address`, selected
-`type`, target `pointerSize`, requested/available byte counts, and the same
-`DataRow[]` format used by chunk payloads. `frontend/src/graph.ts` adds each
-record as a `memory` node and resolves typed pointer fields against chunk,
-management-structure, and other memory-node address indexes.
+The TypeScript frontend keeps user-created address dumps in `MemoryViewRecord`
+values. A record contains the canonical `address`, selected `type`, target
+`pointerSize`, requested/available byte counts, and the same `DataRow[]` format
+used by chunk payloads. `type: "raw_memory"` is the default and only displays
+bytes; a `ChunkViewType` such as `io_file` opts into field decoding and typed
+pointer edges. `frontend/src/graph.ts` adds each record as a `memory` node and
+resolves typed pointer fields against chunk, management-structure, and other
+memory-node address indexes.
 
 Live clients request bytes with Socket.IO:
 
 ```json
-{"requestId":"memory-1","address":"0x7ffff7dd18c0","type":"io_file","size":216}
+{"requestId":"memory-1","address":"0x7ffff7dd18c0","type":"raw_memory","size":256}
 ```
 
 The server replies on `memoryData` with `requestId`, `address`, `type`,

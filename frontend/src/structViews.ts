@@ -1,5 +1,5 @@
 import { dataRows, formatHex, hexNumber } from "./data";
-import type { ChunkView, ChunkViewField, ChunkViewType, DataRow, HeapChunk } from "./types";
+import type { ChunkView, ChunkViewField, ChunkViewType, DataRow, HeapChunk, MemoryViewType } from "./types";
 
 type FieldKind = "pointer" | "u64" | "s64" | "u32" | "u24" | "s32" | "u16" | "s16" | "u8" | "s8" | "bytes";
 
@@ -23,12 +23,24 @@ export interface ChunkViewOption {
   description: string;
 }
 
+export interface MemoryViewOption {
+  value: MemoryViewType;
+  label: string;
+  description: string;
+}
+
 export const CHUNK_VIEW_OPTIONS: ChunkViewOption[] = [
   { value: "malloc_chunk", label: "malloc_chunk", description: "Allocator header and bin links" },
   { value: "io_file", label: "_IO_FILE", description: "glibc FILE object (ABI-aware layout)" },
   { value: "io_file_plus", label: "_IO_FILE_plus", description: "_IO_FILE followed by a vtable pointer" },
   { value: "io_jump_t", label: "_IO_jump_t", description: "FILE virtual function table" },
   { value: "io_wide_data", label: "_IO_wide_data", description: "Wide-stream backing structure (partial)" },
+];
+
+/** Address dumps are intentionally untyped by default; structure parsing is optional. */
+export const MEMORY_VIEW_OPTIONS: MemoryViewOption[] = [
+  { value: "raw_memory", label: "raw memory dump", description: "Show bytes without applying a structure layout" },
+  ...CHUNK_VIEW_OPTIONS,
 ];
 
 const IO_FLAG_NAMES: Array<[number, string]> = [
@@ -425,6 +437,18 @@ export function reinterpretMemoryRows(
 export function viewExpectedSize(type: ChunkViewType, pointerSize: number): number {
   const normalizedPointerSize = pointerSize === 4 ? 4 : 8;
   return viewSpec(type, normalizedPointerSize).expectedSize;
+}
+
+export function memoryViewExpectedSize(type: MemoryViewType, pointerSize: number): number {
+  return type === "raw_memory" ? 0x100 : viewExpectedSize(type, pointerSize);
+}
+
+export function isTypedMemoryView(type: MemoryViewType): type is ChunkViewType {
+  return type !== "raw_memory";
+}
+
+export function memoryViewOption(type: MemoryViewType): MemoryViewOption {
+  return MEMORY_VIEW_OPTIONS.find((option) => option.value === type) ?? MEMORY_VIEW_OPTIONS[0];
 }
 
 export function chunkViewOption(type: ChunkViewType): ChunkViewOption {

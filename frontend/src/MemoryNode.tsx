@@ -3,7 +3,7 @@ import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import type { MouseEvent } from "react";
 
 import { formatHex } from "./data";
-import { chunkViewOption, reinterpretMemoryRows } from "./structViews";
+import { isTypedMemoryView, memoryViewOption, reinterpretMemoryRows } from "./structViews";
 import type { MemoryNodeData } from "./types";
 
 type MemoryNodeProps = NodeProps<Node<MemoryNodeData>>;
@@ -14,8 +14,10 @@ function display(value: string | undefined, fallback = "-"): string {
 
 export function MemoryNode({ data, selected }: MemoryNodeProps) {
   const { memoryView, expanded, graphId } = data;
-  const interpretation = reinterpretMemoryRows(memoryView.data, memoryView.type, memoryView.pointerSize, memoryView.dataTruncated);
-  const option = chunkViewOption(memoryView.type);
+  const interpretation = isTypedMemoryView(memoryView.type)
+    ? reinterpretMemoryRows(memoryView.data, memoryView.type, memoryView.pointerSize, memoryView.dataTruncated)
+    : null;
+  const option = memoryViewOption(memoryView.type);
   const toggle = (event: MouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
     data.onToggle(graphId);
@@ -44,8 +46,8 @@ export function MemoryNode({ data, selected }: MemoryNodeProps) {
       }}>
         <span><b>read</b> {formatHex(memoryView.availableSize)} / {formatHex(memoryView.requestedSize)} B</span>
         <span className="memory-pointer-width">{memoryView.pointerSize * 8}-bit</span>
-        <span className={`memory-state ${memoryView.error || interpretation.truncated ? "is-warning" : "is-ready"}`}>
-          {memoryView.error ? "error" : interpretation.truncated ? "partial" : "ready"}
+        <span className={`memory-state ${memoryView.error || interpretation?.truncated ? "is-warning" : "is-ready"}`}>
+          {memoryView.error ? "error" : interpretation?.truncated ? "partial" : "ready"}
         </span>
         <span className="node-expand" aria-hidden="true">{expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}</span>
       </div>
@@ -54,15 +56,19 @@ export function MemoryNode({ data, selected }: MemoryNodeProps) {
         <div className="node-body memory-body" onClick={select}>
           <div className="section-label"><Database size={12} /> {option.label}</div>
           {memoryView.error && <div className="memory-error"><AlertTriangle size={12} /> <span>{memoryView.error}</span></div>}
-          {interpretation.truncated && <div className="memory-warning">captured bytes do not cover the complete layout</div>}
-          <div className="field-list">
-            {interpretation.fields.slice(0, 10).map((field) => (
-              <div className="field-row" key={`${field.offset}-${field.name}`}>
-                <span className="field-name">{field.name}</span>
-                <span className={`field-value ${field.target ? "is-pointer" : ""}`}>{field.available ? field.value : "-"}</span>
-              </div>
-            ))}
-          </div>
+          {interpretation?.truncated && <div className="memory-warning">captured bytes do not cover the complete layout</div>}
+          {interpretation ? (
+            <div className="field-list">
+              {interpretation.fields.slice(0, 10).map((field) => (
+                <div className="field-row" key={`${field.offset}-${field.name}`}>
+                  <span className="field-name">{field.name}</span>
+                  <span className={`field-value ${field.target ? "is-pointer" : ""}`}>{field.available ? field.value : "-"}</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="memory-raw-summary">raw bytes only; use the dump panel to inspect this range</div>
+          )}
         </div>
       )}
       <button className="node-expand-button" type="button" onClick={toggle} aria-label={expanded ? "Collapse memory view" : "Expand memory view"} aria-expanded={expanded} title={expanded ? "Collapse" : "Expand"}>

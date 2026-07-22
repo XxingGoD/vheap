@@ -31,6 +31,9 @@ export interface MemoryRegionRow {
 /** A memory interpretation that can be selected for a chunk in the inspector. */
 export type ChunkViewType = "malloc_chunk" | "io_file" | "io_file_plus" | "io_wide_data" | "io_jump_t";
 
+/** A standalone address dump may remain untyped until the user requests an interpretation. */
+export type MemoryViewType = "raw_memory" | ChunkViewType;
+
 export interface ChunkViewField extends HeapField {
   offset: string;
   size: number;
@@ -85,7 +88,7 @@ export interface ManagementStructure {
 export interface MemoryViewRecord {
   id: string;
   address: string;
-  type: ChunkViewType;
+  type: MemoryViewType;
   pointerSize: number;
   requestedSize: number;
   availableSize: number;

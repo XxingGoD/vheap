@@ -1,8 +1,8 @@
-import { AlertTriangle, Clipboard, Code2, Database, ExternalLink, FileJson, Trash2, X } from "lucide-react";
+import { AlertTriangle, Binary, Clipboard, Code2, Database, ExternalLink, FileJson, Trash2, X } from "lucide-react";
 import { useState, type ReactNode } from "react";
 
 import { chunkBaseAddress, dataRows, fieldRows, formatHex } from "./data";
-import { CHUNK_VIEW_OPTIONS, chunkViewOption, reinterpretChunk, reinterpretMemoryRows } from "./structViews";
+import { CHUNK_VIEW_OPTIONS, chunkViewOption, isTypedMemoryView, memoryViewOption, reinterpretChunk, reinterpretMemoryRows } from "./structViews";
 import type { ChunkViewField, ChunkViewType, SelectedItem } from "./types";
 
 interface InspectorProps {
@@ -157,14 +157,16 @@ function MemoryInspector({
   onRemove: (id: string) => void;
 }) {
   const { memoryView } = item;
-  const interpreted = reinterpretMemoryRows(memoryView.data, memoryView.type, memoryView.pointerSize, memoryView.dataTruncated);
+  const interpreted = isTypedMemoryView(memoryView.type)
+    ? reinterpretMemoryRows(memoryView.data, memoryView.type, memoryView.pointerSize, memoryView.dataTruncated)
+    : null;
   const visibleRows = memoryView.data.slice(0, 96);
   return (
     <div className="inspector-content">
-      <div className="inspector-heading"><span className="node-kind">memory</span><h2>{memoryView.type}</h2></div>
+      <div className="inspector-heading"><span className="node-kind">memory</span><h2>{memoryViewOption(memoryView.type).label}</h2></div>
       <div className="inspector-subtitle">{value(memoryView.address)}</div>
       <div className="memory-inspector-actions">
-        <span className="memory-source-label">address interpretation</span>
+        <span className="memory-source-label">raw address view</span>
         <button className="remove-memory-button" type="button" onClick={() => onRemove(memoryView.id)}><Trash2 size={13} /> remove view</button>
       </div>
       <div className="copy-grid">
@@ -174,16 +176,22 @@ function MemoryInspector({
         <CopyValue label="pointer" raw={`${memoryView.pointerSize * 8}-bit`} />
       </div>
       {memoryView.error && <div className="memory-inspector-error"><AlertTriangle size={14} /><span>{memoryView.error}</span></div>}
-      <InspectorSection title={interpreted.label} icon={<Code2 size={13} />}>
-        <div className="view-type-meta">
-          <span>{interpreted.pointerSize * 8}-bit pointers</span>
-          <span>{formatHex(interpreted.availableSize)} / {formatHex(interpreted.expectedSize)} bytes</span>
-        </div>
-        {interpreted.truncated && <div className="view-type-warning">captured bytes are shorter than the selected structure layout</div>}
-        <div className="typed-field-list">
-          {interpreted.fields.map((field) => <TypedField key={`${field.offset}-${field.name}`} field={field} />)}
-        </div>
-      </InspectorSection>
+      {interpreted ? (
+        <InspectorSection title={interpreted.label} icon={<Code2 size={13} />}>
+          <div className="view-type-meta">
+            <span>{interpreted.pointerSize * 8}-bit pointers</span>
+            <span>{formatHex(interpreted.availableSize)} / {formatHex(interpreted.expectedSize)} bytes</span>
+          </div>
+          {interpreted.truncated && <div className="view-type-warning">captured bytes are shorter than the selected structure layout</div>}
+          <div className="typed-field-list">
+            {interpreted.fields.map((field) => <TypedField key={`${field.offset}-${field.name}`} field={field} />)}
+          </div>
+        </InspectorSection>
+      ) : (
+        <InspectorSection title="raw bytes" icon={<Binary size={13} />}>
+          <div className="payload-empty">no structure interpretation applied</div>
+        </InspectorSection>
+      )}
       <InspectorSection title="raw memory" icon={<Database size={13} />}>
         <div className="payload-info"><span>{value(memoryView.address)}</span><span>{memoryView.availableSize} bytes</span></div>
         {memoryView.dataDisabled ? <div className="payload-empty">memory reads disabled</div> : visibleRows.length === 0 ? <div className="payload-empty">no bytes returned</div> : (

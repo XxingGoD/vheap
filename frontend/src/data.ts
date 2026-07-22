@@ -5,8 +5,8 @@ import type {
   HeapField,
   HeapSnapshot,
   ManagementStructure,
-  ChunkViewType,
   MemoryViewRecord,
+  MemoryViewType,
   MemoryRegionRow,
 } from "./types";
 
@@ -478,7 +478,7 @@ function regionAddress(value: bigint, pointerSize: number): string {
   return `0x${value.toString(16).padStart(width, "0")}`;
 }
 
-export function memoryViewId(address: string, type: ChunkViewType): string {
+export function memoryViewId(address: string, type: MemoryViewType): string {
   return `memory:${canonicalAddress(address)}:${type}`;
 }
 
@@ -581,11 +581,11 @@ export function memoryRegionRows(view: MemoryViewRecord): MemoryRegionRow[] {
   return rows;
 }
 
-export function normaliseMemoryView(value: unknown, fallbackType: ChunkViewType): MemoryViewRecord | null {
+export function normaliseMemoryView(value: unknown, fallbackType: MemoryViewType): MemoryViewRecord | null {
   if (!isRecord(value)) return null;
   const address = text(value.address, "None");
-  const rawType = text(value.type, fallbackType) as ChunkViewType;
-  const validTypes: ChunkViewType[] = ["malloc_chunk", "io_file", "io_file_plus", "io_jump_t", "io_wide_data"];
+  const rawType = text(value.type, fallbackType) as MemoryViewType;
+  const validTypes: MemoryViewType[] = ["raw_memory", "malloc_chunk", "io_file", "io_file_plus", "io_jump_t", "io_wide_data"];
   const type = validTypes.includes(rawType) ? rawType : fallbackType;
   const pointerSize = Number(value.pointerSize) === 4 ? 4 : 8;
   const rows = Array.isArray(value.data)
