@@ -69,6 +69,7 @@ const nodeTypes: NodeTypes = {
 const DEMO_MODE = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("demo") === "1";
 const EMPTY_SNAPSHOT: HeapSnapshot = { heads: {}, bins: {}, structures: [] };
 const MAX_MEMORY_VIEW_BYTES = 0x10000;
+const MEMORY_REQUEST_TIMEOUT_MS = 10000;
 
 interface PendingMemoryRequest {
   id: string;
@@ -76,6 +77,7 @@ interface PendingMemoryRequest {
   type: ChunkViewType;
   requestedSize: number;
   select: boolean;
+  timer: number;
 }
 
 function setEquals(left: Set<string>, right: Set<string>): boolean {
@@ -132,6 +134,7 @@ export default function App() {
   const memoryViewsRef = useRef<MemoryViewRecord[]>([]);
   const pendingMemoryRequests = useRef(new Map<string, PendingMemoryRequest>());
   const memoryRequestSequence = useRef(0);
+  const memoryAddressRef = useRef<HTMLInputElement | null>(null);
   const deferredQuery = useDeferredValue(query);
 
   const selectedMemoryExpectedSize = viewExpectedSize(memoryTypeInput, pointerSize);
@@ -175,11 +178,33 @@ export default function App() {
     }
   }, []);
 
+  const markMemoryRequestError = useCallback((requestId: string, message: string) => {
+    const pending = pendingMemoryRequests.current.get(requestId);
+    if (!pending) return;
+    window.clearTimeout(pending.timer);
+    pendingMemoryRequests.current.delete(requestId);
+    setMemoryBusy(pendingMemoryRequests.current.size > 0);
+    setMemoryViews((previous) => previous.map((view) => view.id === pending.id ? {
+      ...view,
+      address: pending.address,
+      type: pending.type,
+      pointerSize: pointerSizeRef.current,
+      requestedSize: pending.requestedSize,
+      availableSize: 0,
+      data: [],
+      dataTruncated: true,
+      source: "gdb",
+      error: message,
+    } : view));
+    if (pending.select) selectNode(pending.id);
+  }, [selectNode]);
+
   const handleMemoryData = useCallback((payload: unknown) => {
     if (!isRecord(payload)) return;
     const requestId = String(payload.requestId ?? "");
     const pending = pendingMemoryRequests.current.get(requestId);
     if (!pending) return;
+    window.clearTimeout(pending.timer);
     pendingMemoryRequests.current.delete(requestId);
     setMemoryBusy(pendingMemoryRequests.current.size > 0);
     const response = {
@@ -191,12 +216,20 @@ export default function App() {
       requestedSize: payload.requestedSize ?? pending.requestedSize,
     };
     const record = normaliseMemoryView(response, pending.type);
-    if (!record) return;
+    if (!record) {
+      setMemoryViews((previous) => previous.map((view) => view.id === pending.id ? {
+        ...view,
+        error: "invalid memory response from GDB",
+        dataTruncated: true,
+      } : view));
+      if (pending.select) selectNode(pending.id);
+      return;
+    }
     upsertMemoryView(record);
     if (pending.select) selectNode(record.id);
   }, [selectNode, upsertMemoryView]);
 
-  const requestMemoryView = useCallback((addressInput: string, type: ChunkViewType, requestedSize: number, select = true) => {
+  const requestMemoryView = useCallback((addressInput: string, type: ChunkViewType, requestedSize: number, select = true, replaceId?: string) => {
     const parsedAddress = parseAddress(addressInput);
     if (parsedAddress === null) {
       setMemoryFormError("enter a hexadecimal or decimal address");
@@ -207,7 +240,7 @@ export default function App() {
       return;
     }
     const address = canonicalAddress(parsedAddress);
-    const id = memoryViewId(address, type);
+    const id = replaceId ?? memoryViewId(address, type);
 
     if (DEMO_MODE) {
       const read = readSnapshotMemory(snapshotRef.current, parsedAddress, requestedSize);
@@ -233,14 +266,23 @@ export default function App() {
       setMemoryFormError("GDB socket is not connected");
       return;
     }
+    const existingRequest = [...pendingMemoryRequests.current.values()].find((request) => request.id === id);
+    if (existingRequest) {
+      if (select) selectNode(id);
+      return;
+    }
     const requestId = `memory-${Date.now().toString(36)}-${(memoryRequestSequence.current += 1).toString(36)}`;
-    pendingMemoryRequests.current.set(requestId, {
+    const pending: PendingMemoryRequest = {
       id,
       address,
       type,
       requestedSize,
       select,
-    });
+      timer: window.setTimeout(() => {
+        markMemoryRequestError(requestId, "timed out waiting for GDB to read memory");
+      }, MEMORY_REQUEST_TIMEOUT_MS),
+    };
+    pendingMemoryRequests.current.set(requestId, pending);
     setMemoryBusy(true);
     upsertMemoryView({
       id,
@@ -254,14 +296,18 @@ export default function App() {
       source: "gdb",
     });
     setMemoryFormError(null);
+    if (select) selectNode(id);
     socket.emit("readMemory", { requestId, address, type, size: requestedSize });
-  }, [selectNode, upsertMemoryView]);
+  }, [markMemoryRequestError, selectNode, upsertMemoryView]);
 
   const removeMemoryView = useCallback((id: string) => {
     setMemoryViews((previous) => previous.filter((view) => view.id !== id));
     setSelectedId((current) => current === id || current === `memory_${id}` ? null : current);
     for (const [requestId, request] of pendingMemoryRequests.current.entries()) {
-      if (request.id === id) pendingMemoryRequests.current.delete(requestId);
+      if (request.id === id) {
+        window.clearTimeout(request.timer);
+        pendingMemoryRequests.current.delete(requestId);
+      }
     }
     setMemoryBusy(pendingMemoryRequests.current.size > 0);
   }, []);
@@ -269,7 +315,7 @@ export default function App() {
   const refreshMemoryViews = useCallback(() => {
     for (const view of memoryViewsRef.current) {
       if ([...pendingMemoryRequests.current.values()].some((request) => request.id === view.id)) continue;
-      requestMemoryView(view.address, view.type, view.requestedSize, false);
+      requestMemoryView(view.address, view.type, view.requestedSize, false, view.id);
     }
   }, [requestMemoryView]);
 
@@ -321,8 +367,9 @@ export default function App() {
     });
     socket.on("disconnect", () => {
       setConnected(false);
-      pendingMemoryRequests.current.clear();
-      setMemoryBusy(false);
+      for (const requestId of [...pendingMemoryRequests.current.keys()]) {
+        markMemoryRequestError(requestId, "GDB socket disconnected before memory was read");
+      }
     });
     socket.on("connect_error", (reason) => setError(reason.message || "Socket.IO connection failed"));
     socket.on("heapData", receiveSnapshot);
@@ -331,11 +378,12 @@ export default function App() {
       socket.removeAllListeners();
       socket.disconnect();
       socketRef.current = null;
+      for (const request of pendingMemoryRequests.current.values()) window.clearTimeout(request.timer);
       pendingMemoryRequests.current.clear();
       setMemoryBusy(false);
       setConnected(false);
     };
-  }, [handleMemoryData, receiveSnapshot, refreshMemoryViews]);
+  }, [handleMemoryData, markMemoryRequestError, receiveSnapshot, refreshMemoryViews]);
 
   useEffect(() => {
     if (DEMO_MODE || !live) return;
@@ -406,7 +454,7 @@ export default function App() {
 
   const refreshActiveMemoryView = useCallback(() => {
     if (!activeMemoryView) return;
-    requestMemoryView(activeMemoryView.address, activeMemoryView.type, activeMemoryView.requestedSize, false);
+    requestMemoryView(activeMemoryView.address, activeMemoryView.type, activeMemoryView.requestedSize, false, activeMemoryView.id);
   }, [activeMemoryView, requestMemoryView]);
 
   useEffect(() => {
@@ -506,7 +554,7 @@ export default function App() {
             <div className="section-heading"><span><Binary size={13} /> memory views</span><span className="section-count">{memoryViews.length}</span></div>
             <form className="memory-form" onSubmit={submitMemoryView}>
               <label className="memory-form-label" htmlFor="memory-address">address</label>
-              <input id="memory-address" className="memory-input" value={memoryAddressInput} onChange={(event) => setMemoryAddressInput(event.target.value)} placeholder="0x7ffff7dd18c0" spellCheck={false} autoComplete="off" />
+              <input ref={memoryAddressRef} id="memory-address" className="memory-input" value={memoryAddressInput} onChange={(event) => setMemoryAddressInput(event.target.value)} placeholder="0x7ffff7dd18c0" spellCheck={false} autoComplete="off" />
               <label className="memory-form-label" htmlFor="memory-type">structure type</label>
               <select id="memory-type" className="memory-input" value={memoryTypeInput} onChange={(event) => setMemoryTypeInput(event.target.value as ChunkViewType)}>
                 {CHUNK_VIEW_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
@@ -546,13 +594,17 @@ export default function App() {
               <button
                 className={`live-button memory-panel-toggle ${memoryPanelOpen ? "is-live" : ""}`}
                 type="button"
-                disabled={memoryViews.length === 0}
                 onClick={() => {
+                  if (memoryViews.length === 0) {
+                    setSidebarOpen(true);
+                    window.requestAnimationFrame(() => memoryAddressRef.current?.focus());
+                    return;
+                  }
                   if (!memoryPanelViewId && memoryViews[0]) setMemoryPanelViewId(memoryViews[0].id);
                   setMemoryPanelOpen((open) => !open);
                 }}
-                title={memoryPanelOpen ? "Hide memory region" : "Show memory region"}
-                aria-label={memoryPanelOpen ? "Hide memory region" : "Show memory region"}
+                title={memoryViews.length === 0 ? "Open memory view form" : memoryPanelOpen ? "Hide memory region" : "Show memory region"}
+                aria-label={memoryViews.length === 0 ? "Open memory view form" : memoryPanelOpen ? "Hide memory region" : "Show memory region"}
               >
                 <Binary size={13} /> memory
               </button>
@@ -597,6 +649,7 @@ export default function App() {
               views={memoryViews}
               busy={memoryBusy}
               onSelectView={(id) => selectNode(id)}
+              onNavigate={(address) => requestMemoryView(address, activeMemoryView.type, activeMemoryView.requestedSize, true, activeMemoryView.id)}
               onRefresh={refreshActiveMemoryView}
               onClose={() => setMemoryPanelOpen(false)}
             />

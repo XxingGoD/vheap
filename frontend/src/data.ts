@@ -82,9 +82,14 @@ export function parseAddress(value: unknown): bigint | null {
   if (typeof value !== "string") return null;
   const raw = value.trim();
   if (!raw || raw === "None" || raw === "-") return null;
-  if (!/^(?:0[xX][0-9a-fA-F]+|[0-9]+)$/.test(raw)) return null;
+  // GDB commonly prints pointers with ``0x``, while challenge notes often
+  // omit the prefix. Keep digit-only input decimal for compatibility with
+  // the size field, and treat a bare value containing a-f as hexadecimal.
+  if (!/^(?:0[xX][0-9a-fA-F]+|[0-9]+|[0-9a-fA-F]*[a-fA-F][0-9a-fA-F]*)$/.test(raw)) return null;
   try {
-    const parsed = BigInt(raw);
+    const parsed = raw.toLowerCase().startsWith("0x") || /[a-fA-F]/.test(raw)
+      ? BigInt(`0x${raw.replace(/^0x/i, "")}`)
+      : BigInt(raw);
     return parsed >= 0n && parsed <= 0xffffffffffffffffn ? parsed : null;
   } catch {
     return null;

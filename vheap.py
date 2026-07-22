@@ -42,7 +42,9 @@ MODULE_DIR = Path(inspect.getsourcefile(inspect.currentframe()) or __file__).res
 DEFAULT_DATA_BYTES = 64
 MAX_DATA_BYTES = 0x10000
 MAX_MEMORY_VIEW_BYTES = 0x10000
-MEMORY_VIEW_TIMEOUT = 3.0
+# GDB only services ``post_event`` callbacks while it is responsive. Allow a
+# slow stop to finish, while keeping a failed browser request recoverable.
+MEMORY_VIEW_TIMEOUT = 8.0
 MAX_STRUCTURE_FIELDS = 96
 POINTER_FIELDS = {
     "ar_ptr",
@@ -104,30 +106,31 @@ def _value_to_int(value: Any) -> Optional[int]:
         return None
 
 
-def _parse_address(value: Any) -> Optional[int]:
-    """Parse a user-supplied address without accepting negative values."""
+def _parse_user_integer(value: Any, maximum: int) -> Optional[int]:
+    """Parse decimal, 0x-prefixed hex, or bare hex containing a-f."""
     if isinstance(value, bool) or value is None:
         return None
     try:
         raw = str(value).strip()
         if not raw:
             return None
-        address = int(raw, 16 if raw.lower().startswith("0x") else 10)
+        has_hex_prefix = raw.lower().startswith("0x")
+        has_hex_digit = any(char in "abcdefABCDEF" for char in raw)
+        number = int(raw, 16 if has_hex_prefix or has_hex_digit else 10)
     except (TypeError, ValueError, OverflowError):
         return None
-    return address if 0 <= address <= 0xFFFFFFFFFFFFFFFF else None
+    return number if 0 <= number <= maximum else None
+
+
+def _parse_address(value: Any) -> Optional[int]:
+    """Parse a user-supplied address without accepting negative values."""
+    return _parse_user_integer(value, 0xFFFFFFFFFFFFFFFF)
 
 
 def _parse_memory_size(value: Any) -> Optional[int]:
     """Keep an arbitrary memory request bounded before it reaches GDB."""
-    if isinstance(value, bool) or value is None:
-        return None
-    try:
-        raw = str(value).strip()
-        size = int(raw, 16 if raw.lower().startswith("0x") else 10)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    return size if 0 < size <= MAX_MEMORY_VIEW_BYTES else None
+    size = _parse_user_integer(value, MAX_MEMORY_VIEW_BYTES)
+    return size if size and size > 0 else None
 
 
 def _format_value(value: Any) -> str:
@@ -165,6 +168,22 @@ def _read_target_memory(address: int, size: int) -> bytes:
         # A stale/corrupted chunk should not prevent all other bins from being
         # displayed. The missing bytes are represented by an empty data list.
         return b""
+
+
+def _read_target_memory_with_error(address: int, size: int) -> tuple[bytes, Optional[str]]:
+    """Read user-requested memory and preserve a useful GDB error message."""
+    if address is None or size <= 0:
+        return b"", "invalid memory range"
+    try:
+        inferior = gdb.selected_inferior()
+        if hasattr(inferior, "is_valid") and not inferior.is_valid():
+            return b"", "no valid GDB inferior is selected"
+        raw = bytes(inferior.read_memory(int(address), int(size)))
+        return raw, None if len(raw) == size else "target returned only part of the requested range"
+    except Exception as error:
+        detail = str(error).strip()
+        suffix = f": {detail}" if detail else ""
+        return b"", f"unable to read target memory{suffix}"
 
 
 def _safe_ascii(data: bytes) -> str:
@@ -719,7 +738,7 @@ class VisualHeap:
         pointer_size = _pointer_size()
         if pointer_size not in (4, 8):
             pointer_size = 8
-        raw = _read_target_memory(address, size)
+        raw, read_error = _read_target_memory_with_error(address, size)
         return {
             "address": _format_value(address),
             "pointerSize": pointer_size,
@@ -728,7 +747,7 @@ class VisualHeap:
             "data": self._memoryRows(address, raw, pointer_size),
             "dataTruncated": len(raw) < size,
             "dataDisabled": False,
-            **({"error": "unable to read target memory"} if not raw else {}),
+            **({"error": read_error} if read_error else {}),
         }
 
     def extraChunkFields(self, chunk: Any) -> Dict[str, Any]:
