@@ -5,6 +5,8 @@ import type {
   HeapField,
   HeapSnapshot,
   ManagementStructure,
+  ChunkViewType,
+  MemoryViewRecord,
 } from "./types";
 
 export type UnknownRecord = Record<string, unknown>;
@@ -31,6 +33,31 @@ export function hexNumber(value: unknown): number {
   if (!raw || raw === "None") return Number.NaN;
   const parsed = raw.toLowerCase().startsWith("0x") ? Number.parseInt(raw, 16) : Number(raw);
   return Number.isFinite(parsed) ? parsed : Number.NaN;
+}
+
+/** Parse an address without losing the high bits of a 64-bit target pointer. */
+export function parseAddress(value: unknown): bigint | null {
+  if (typeof value === "bigint") return value >= 0n && value <= 0xffffffffffffffffn ? value : null;
+  if (typeof value === "number") {
+    return Number.isFinite(value) && Number.isInteger(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER
+      ? BigInt(value)
+      : null;
+  }
+  if (typeof value !== "string") return null;
+  const raw = value.trim();
+  if (!raw || raw === "None" || raw === "-") return null;
+  if (!/^(?:0[xX][0-9a-fA-F]+|[0-9]+)$/.test(raw)) return null;
+  try {
+    const parsed = BigInt(raw);
+    return parsed >= 0n && parsed <= 0xffffffffffffffffn ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function canonicalAddress(value: unknown): string {
+  const parsed = parseAddress(value);
+  return parsed === null ? text(value, "None").trim() : `0x${parsed.toString(16)}`;
 }
 
 export function formatHex(value: number): string {
@@ -221,6 +248,103 @@ export function displayChunks(snapshot: HeapSnapshot, visibleBins: Set<string>):
 
 export function searchMatches(value: string, query: string): boolean {
   return !query || value.toLowerCase().includes(query.trim().toLowerCase());
+}
+
+function decodeBytes(value: string): number[] {
+  const clean = value.replace(/^0x/i, "").replace(/[^0-9a-f]/gi, "");
+  if (!clean) return [];
+  const normalized = clean.length % 2 === 0 ? clean : `0${clean}`;
+  const bytes: number[] = [];
+  for (let index = 0; index < normalized.length; index += 2) {
+    bytes.push(Number.parseInt(normalized.slice(index, index + 2), 16));
+  }
+  return bytes;
+}
+
+function rowBytes(row: DataRow, pointerSize: number): number[] {
+  if (row.bytes) return decodeBytes(row.bytes).slice(0, pointerSize);
+  try {
+    const value = BigInt(row.value);
+    return Array.from({ length: pointerSize }, (_, index) => Number((value >> BigInt(index * 8)) & 0xffn));
+  } catch {
+    return [];
+  }
+}
+
+export function memoryViewId(address: string, type: ChunkViewType): string {
+  return `memory:${canonicalAddress(address)}:${type}`;
+}
+
+export interface SnapshotMemoryRead {
+  rows: DataRow[];
+  availableSize: number;
+  pointerSize: number;
+}
+
+/** Read an address range from already-captured chunk rows (used by demo mode). */
+export function readSnapshotMemory(snapshot: HeapSnapshot, address: string | number | bigint, size: number): SnapshotMemoryRead {
+  const pointerSize = snapshot.pointerSize === 4 ? 4 : 8;
+  const startAddress = parseAddress(address);
+  if (startAddress === null || size <= 0) return { rows: [], availableSize: 0, pointerSize };
+  const bytes = new Map<bigint, number>();
+  const addChunkRows = (chunk: HeapChunk): void => {
+    const chunkPointerSize = chunk.pointerSize === 4 ? 4 : pointerSize;
+    const dataAddress = parseAddress(chunk.dataAddress);
+    for (const row of dataRows(chunk)) {
+      const rowAddress = parseAddress(row.address);
+      const offset = parseAddress(row.offset);
+      const rowStart = rowAddress ?? (dataAddress !== null && offset !== null
+        ? dataAddress + offset
+        : null);
+      if (rowStart === null) continue;
+      rowBytes(row, chunkPointerSize).forEach((byte, index) => bytes.set(rowStart + BigInt(index), byte));
+    }
+  };
+
+  for (const chunks of Object.values(snapshot.bins)) chunks.forEach(addChunkRows);
+  const availableSize = (() => {
+    let count = 0;
+    while (count < size && bytes.has(startAddress + BigInt(count))) count += 1;
+    return count;
+  })();
+  const rows: DataRow[] = [];
+  for (let offset = 0; offset < availableSize; offset += pointerSize) {
+    const part = Array.from({ length: Math.min(pointerSize, availableSize - offset) }, (_, index) => bytes.get(startAddress + BigInt(offset + index)) ?? 0);
+    const value = part.reduce((result, byte, index) => result | (BigInt(byte) << BigInt(index * 8)), 0n);
+    rows.push({
+      offset: formatHex(offset),
+      address: `0x${(startAddress + BigInt(offset)).toString(16)}`,
+      value: `0x${value.toString(16)}`,
+      bytes: part.map((byte) => byte.toString(16).padStart(2, "0")).join(""),
+      ascii: part.map((byte) => byte >= 32 && byte < 127 ? String.fromCharCode(byte) : ".").join(""),
+    });
+  }
+  return { rows, availableSize, pointerSize };
+}
+
+export function normaliseMemoryView(value: unknown, fallbackType: ChunkViewType): MemoryViewRecord | null {
+  if (!isRecord(value)) return null;
+  const address = text(value.address, "None");
+  const rawType = text(value.type, fallbackType) as ChunkViewType;
+  const validTypes: ChunkViewType[] = ["malloc_chunk", "io_file", "io_file_plus", "io_jump_t", "io_wide_data"];
+  const type = validTypes.includes(rawType) ? rawType : fallbackType;
+  const pointerSize = Number(value.pointerSize) === 4 ? 4 : 8;
+  const rows = Array.isArray(value.data)
+    ? value.data.map(normaliseDataRow).filter((row): row is DataRow => row !== null)
+    : [];
+  return {
+    id: text(value.id, memoryViewId(address, type)),
+    address,
+    type,
+    pointerSize,
+    requestedSize: Number(value.requestedSize) || Number(value.dataSize) || 0,
+    availableSize: Number(value.availableSize) || 0,
+    data: rows,
+    dataTruncated: value.dataTruncated === true,
+    ...(value.dataDisabled === true ? { dataDisabled: true } : {}),
+    ...(value.source ? { source: text(value.source) } : {}),
+    ...(value.error ? { error: text(value.error) } : {}),
+  };
 }
 
 function demoChunk(

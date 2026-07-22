@@ -68,6 +68,21 @@ export interface ManagementStructure {
   fields: HeapField[];
 }
 
+/** A user-requested address range interpreted as one registered structure. */
+export interface MemoryViewRecord {
+  id: string;
+  address: string;
+  type: ChunkViewType;
+  pointerSize: number;
+  requestedSize: number;
+  availableSize: number;
+  data: DataRow[];
+  dataTruncated: boolean;
+  dataDisabled?: boolean;
+  source?: string;
+  error?: string;
+}
+
 export interface HeapSnapshot {
   version?: number;
   pointerSize?: number;
@@ -80,7 +95,7 @@ export type LayoutDirection = "RIGHT" | "DOWN";
 export type SidebarTab = "bins" | "structures";
 
 export interface BaseGraphData extends Record<string, unknown> {
-  kind: "head" | "chunk" | "structure";
+  kind: "head" | "chunk" | "structure" | "memory";
   graphId: string;
   label: string;
   expanded: boolean;
@@ -106,7 +121,13 @@ export interface StructureNodeData extends BaseGraphData {
   structure: ManagementStructure;
 }
 
-export type GraphNodeData = BinHeadNodeData | ChunkNodeData | StructureNodeData;
+export interface MemoryNodeData extends BaseGraphData {
+  kind: "memory";
+  memoryView: MemoryViewRecord;
+  onRemove: (id: string) => void;
+}
+
+export type GraphNodeData = BinHeadNodeData | ChunkNodeData | StructureNodeData | MemoryNodeData;
 export type HeapNode = Node<GraphNodeData>;
 export type HeapEdge = Edge<{ relation: string }>;
 
@@ -119,10 +140,12 @@ export interface DisplayChunk {
 export interface GraphBuildOptions {
   visibleBins: Set<string>;
   showStructures: boolean;
+  memoryViews?: MemoryViewRecord[];
   query: string;
   expanded: Set<string>;
   onToggle: (graphId: string) => void;
   onSelect: (graphId: string) => void;
+  onRemoveMemoryView?: (id: string) => void;
 }
 
 export interface GraphModel {
@@ -130,9 +153,11 @@ export interface GraphModel {
   edges: HeapEdge[];
   chunks: DisplayChunk[];
   structures: ManagementStructure[];
+  memoryViews: MemoryViewRecord[];
 }
 
 export type SelectedItem =
   | { kind: "chunk"; id: string; bin: string; chunk: HeapChunk }
   | { kind: "structure"; id: string; structure: ManagementStructure }
+  | { kind: "memory"; id: string; memoryView: MemoryViewRecord }
   | { kind: "head"; id: string; head: string; address: string; count: number };

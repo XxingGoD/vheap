@@ -3,14 +3,15 @@ import { MarkerType } from "@xyflow/react";
 
 import {
   chunkBaseAddress,
+  canonicalAddress,
   dataRows,
   displayChunks,
   displayBinNames,
   fieldRows,
-  formatHex,
-  hexNumber,
+  parseAddress,
   searchMatches,
 } from "./data";
+import { reinterpretMemoryRows } from "./structViews";
 import type {
   BinHeadNodeData,
   ChunkNodeData,
@@ -21,6 +22,8 @@ import type {
   HeapNode,
   HeapSnapshot,
   ManagementStructure,
+  MemoryNodeData,
+  MemoryViewRecord,
   StructureNodeData,
 } from "./types";
 
@@ -32,6 +35,7 @@ const relationStyles: Record<string, { stroke: string; label: string }> = {
   fdNextSize: { stroke: "#f07d5d", label: "fd_nextsize" },
   bkNextSize: { stroke: "#bb8bda", label: "bk_nextsize" },
   structure: { stroke: "#66b5d8", label: "management" },
+  memory: { stroke: "#b995db", label: "typed pointer" },
   head: { stroke: "#dfb35b", label: "bin head" },
 };
 
@@ -66,23 +70,34 @@ function headWidth(): number {
   return 226;
 }
 
+function memoryWidth(expanded: boolean): number {
+  return expanded ? 360 : 272;
+}
+
+function memoryHeight(view: MemoryViewRecord, expanded: boolean): number {
+  if (!expanded) return 96;
+  const interpretation = reinterpretMemoryRows(view.data, view.type, view.pointerSize, view.dataTruncated);
+  return 132 + Math.min(interpretation.fields.length, 10) * 23 + (view.error ? 30 : 0) + (interpretation.truncated ? 28 : 0);
+}
+
 function graphNodeId(value: string): string {
   return value.replace(/[^a-zA-Z0-9:_-]/g, "_");
 }
 
 function addAddress(index: Map<string, string[]>, address: unknown, nodeId: string): void {
-  const numeric = hexNumber(address);
-  if (!Number.isFinite(numeric)) return;
-  const key = formatHex(numeric);
+  const parsed = parseAddress(address);
+  if (parsed === null) return;
+  const key = canonicalAddress(parsed);
   const current = index.get(key) ?? [];
   if (!current.includes(nodeId)) current.push(nodeId);
   index.set(key, current);
 }
 
 function firstAddress(index: Map<string, string[]>, address: unknown): string | undefined {
-  const numeric = hexNumber(address);
-  if (!Number.isFinite(numeric)) return undefined;
-  return index.get(formatHex(numeric))?.[0];
+  const parsed = parseAddress(address);
+  if (parsed === null) return undefined;
+  const key = canonicalAddress(parsed);
+  return index.get(key)?.[0];
 }
 
 function edgeFor(
@@ -141,6 +156,7 @@ export function buildGraph(snapshot: HeapSnapshot, options: GraphBuildOptions): 
   const edges: HeapEdge[] = [];
   const chunkAddressIndex = new Map<string, string[]>();
   const structureAddressIndex = new Map<string, string[]>();
+  const memoryAddressIndex = new Map<string, string[]>();
   const edgeIds = new Set<string>();
 
   const addEdge = (edge: HeapEdge): void => {
@@ -231,8 +247,46 @@ export function buildGraph(snapshot: HeapSnapshot, options: GraphBuildOptions): 
     addAddress(structureAddressIndex, structure.address, graphId);
   }
 
+  const memoryViews = (options.memoryViews ?? []).filter((view) =>
+    nodeMatches(query, [
+      view.id,
+      view.address,
+      view.type,
+      String(view.requestedSize),
+      String(view.availableSize),
+      ...view.data.flatMap((row) => [row.offset, row.address, row.value, row.bytes ?? "", row.ascii ?? ""]),
+      ...reinterpretMemoryRows(view.data, view.type, view.pointerSize, view.dataTruncated).fields.flatMap((field) => [field.name, field.value]),
+    ]),
+  );
+
+  for (const view of memoryViews) {
+    const graphId = graphNodeId(view.id);
+    const expanded = options.expanded.has(graphId);
+    const data: MemoryNodeData = {
+      kind: "memory",
+      graphId,
+      label: `${view.type} @ ${view.address}`,
+      expanded,
+      memoryView: view,
+      onToggle: options.onToggle,
+      onSelect: options.onSelect,
+      onRemove: options.onRemoveMemoryView ?? (() => undefined),
+    };
+    nodes.push({
+      id: graphId,
+      type: "memory",
+      data,
+      position: { x: 0, y: 0 },
+      style: { width: memoryWidth(expanded), height: memoryHeight(view, expanded) },
+      draggable: true,
+    });
+    addAddress(memoryAddressIndex, view.address, graphId);
+  }
+
   const nodeIds = new Set(nodes.map((node) => node.id));
   const resolveTarget = (value: unknown): string | undefined => {
+    const memoryTarget = firstAddress(memoryAddressIndex, value);
+    if (memoryTarget && nodeIds.has(memoryTarget)) return memoryTarget;
     const structureTarget = firstAddress(structureAddressIndex, value);
     if (structureTarget && nodeIds.has(structureTarget)) return structureTarget;
     const chunkTarget = firstAddress(chunkAddressIndex, value);
@@ -263,7 +317,17 @@ export function buildGraph(snapshot: HeapSnapshot, options: GraphBuildOptions): 
     }
   }
 
-  return { nodes, edges, chunks, structures };
+  for (const view of memoryViews) {
+    const source = graphNodeId(view.id);
+    const interpretation = reinterpretMemoryRows(view.data, view.type, view.pointerSize, view.dataTruncated);
+    for (const field of interpretation.fields) {
+      const target = resolveTarget(field.target);
+      if (!target || target === source) continue;
+      addEdge(edgeFor(`${source}:${field.name}->${target}`, source, target, "memory"));
+    }
+  }
+
+  return { nodes, edges, chunks, structures, memoryViews };
 }
 
 interface ElkChild {

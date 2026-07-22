@@ -41,6 +41,8 @@ MODULE_DIR = Path(inspect.getsourcefile(inspect.currentframe()) or __file__).res
 # from GDB keeps the data view useful for other target architectures as well.
 DEFAULT_DATA_BYTES = 64
 MAX_DATA_BYTES = 0x10000
+MAX_MEMORY_VIEW_BYTES = 0x10000
+MEMORY_VIEW_TIMEOUT = 3.0
 MAX_STRUCTURE_FIELDS = 96
 POINTER_FIELDS = {
     "ar_ptr",
@@ -100,6 +102,32 @@ def _value_to_int(value: Any) -> Optional[int]:
         return int(str(value), 0)
     except (TypeError, ValueError, OverflowError):
         return None
+
+
+def _parse_address(value: Any) -> Optional[int]:
+    """Parse a user-supplied address without accepting negative values."""
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        raw = str(value).strip()
+        if not raw:
+            return None
+        address = int(raw, 16 if raw.lower().startswith("0x") else 10)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return address if 0 <= address <= 0xFFFFFFFFFFFFFFFF else None
+
+
+def _parse_memory_size(value: Any) -> Optional[int]:
+    """Keep an arbitrary memory request bounded before it reaches GDB."""
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        raw = str(value).strip()
+        size = int(raw, 16 if raw.lower().startswith("0x") else 10)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return size if 0 < size <= MAX_MEMORY_VIEW_BYTES else None
 
 
 def _format_value(value: Any) -> str:
@@ -407,6 +435,76 @@ class VisualHeap:
             """
             await self.sio.emit("heapData", self.makeHeapData(), to=sid)
 
+        @self.sio.on("readMemory")
+        async def readMemory(sid, message):
+            """Read an explicitly requested address range on the GDB thread."""
+            payload = message if isinstance(message, dict) else {}
+            request_id = str(payload.get("requestId") or "")
+            address = _parse_address(payload.get("address"))
+            size = _parse_memory_size(payload.get("size"))
+
+            def error_result(message_text: str) -> Dict[str, Any]:
+                return {
+                    "requestId": request_id,
+                    "address": payload.get("address"),
+                    "type": payload.get("type"),
+                    "requestedSize": size or 0,
+                    "availableSize": 0,
+                    "data": [],
+                    "dataTruncated": True,
+                    "dataDisabled": False,
+                    "error": message_text,
+                }
+
+            if address is None:
+                await self.sio.emit("memoryData", error_result("invalid address"), to=sid)
+                return
+            if size is None:
+                await self.sio.emit(
+                    "memoryData",
+                    error_result(f"size must be between 1 and {MAX_MEMORY_VIEW_BYTES} bytes"),
+                    to=sid,
+                )
+                return
+
+            loop = self.loop
+            if loop is None or loop.is_closed():
+                await self.sio.emit("memoryData", error_result("GDB event loop is unavailable"), to=sid)
+                return
+
+            result_future = loop.create_future()
+
+            def finish(result: Dict[str, Any]) -> None:
+                if loop.is_closed():
+                    return
+
+                def set_result() -> None:
+                    if not result_future.done():
+                        result_future.set_result(result)
+
+                loop.call_soon_threadsafe(set_result)
+
+            def read_on_gdb_thread() -> None:
+                try:
+                    finish(self.readMemoryData(address, size))
+                except Exception as error:
+                    finish(error_result(f"memory read failed: {error}"))
+
+            try:
+                post_event = getattr(gdb, "post_event", None)
+                if not callable(post_event):
+                    raise RuntimeError("GDB post_event is unavailable")
+                post_event(read_on_gdb_thread)
+                result = await asyncio.wait_for(result_future, timeout=MEMORY_VIEW_TIMEOUT)
+            except asyncio.TimeoutError:
+                result = error_result("timed out waiting for GDB to read memory")
+            except Exception as error:
+                result = error_result(f"memory read request failed: {error}")
+
+            result["requestId"] = request_id
+            result["type"] = payload.get("type")
+            await self.sio.emit("memoryData", result, to=sid)
+
         # Create http server, and socket io
         app = web.Application()
         self.sio.attach(app)
@@ -573,7 +671,12 @@ class VisualHeap:
             return [], available_size, False, disabled
 
         raw = _read_target_memory(address, limit)
-        word_size = max(1, _pointer_size())
+        rows = self._memoryRows(address, raw, _pointer_size())
+        return rows, available_size, len(raw) < available_size, disabled
+
+    def _memoryRows(self, address: int, raw: bytes, pointer_size: int) -> List[Dict[str, str]]:
+        """Convert raw target bytes to the snapshot row format."""
+        word_size = pointer_size if pointer_size in (4, 8) else 8
         rows: List[Dict[str, str]] = []
         for offset in range(0, len(raw), word_size):
             part = raw[offset : offset + word_size]
@@ -586,7 +689,28 @@ class VisualHeap:
                     "ascii": _safe_ascii(part),
                 }
             )
-        return rows, available_size, len(raw) < available_size, disabled
+        return rows
+
+    def readMemoryData(self, address: int, size: int) -> Dict[str, Any]:
+        """Read an explicit address range for a user-created memory view.
+
+        This method must run on GDB's thread. The Socket.IO handler schedules
+        it with ``gdb.post_event`` before serializing the result.
+        """
+        pointer_size = _pointer_size()
+        if pointer_size not in (4, 8):
+            pointer_size = 8
+        raw = _read_target_memory(address, size)
+        return {
+            "address": _format_value(address),
+            "pointerSize": pointer_size,
+            "requestedSize": size,
+            "availableSize": len(raw),
+            "data": self._memoryRows(address, raw, pointer_size),
+            "dataTruncated": len(raw) < size,
+            "dataDisabled": False,
+            **({"error": "unable to read target memory"} if not raw else {}),
+        }
 
     def extraChunkFields(self, chunk: Any) -> Dict[str, Any]:
         """Collect optional malloc_chunk links exposed by the active Pwndbg."""

@@ -57,6 +57,21 @@ range as unavailable and suggests a larger `--data-bytes` value. The built-in
 On a 64-bit target the common `_IO_FILE_plus` `vtable` appears at offset
 `0xd8`; verify offsets against the challenge's libc before crafting a payload.
 
+### Parse an arbitrary address
+
+The sidebar's **memory views** form reads an address directly from the stopped
+inferior and creates a typed structure node in the main graph. Enter a decimal
+or hexadecimal address, select one of the available structure layouts, and
+submit the form. The read length defaults to the selected layout's expected
+size; an explicit byte count can be supplied when a larger window is useful.
+The same address and type update the existing node instead of creating a
+duplicate. Pointer fields discovered by the layout are connected to matching
+chunks, allocator structures, and other memory views.
+
+In demo mode (`?demo=1`), try address `0x2000` with `_IO_FILE_plus` to inspect
+the bundled payload without a GDB session. Memory views are snapshots only;
+they never write to the inferior.
+
 To update the heap state.
 ```
 vhstate

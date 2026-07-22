@@ -71,6 +71,27 @@ function pointerFields(names: string[], start: number, pointerSize: number): Fie
   return names.map((name, index) => field(name, start + index * pointerSize, pointerSize, "pointer"));
 }
 
+function wordKind(pointerSize: number): FieldKind {
+  return pointerSize === 4 ? "u32" : "u64";
+}
+
+function mallocChunkSpec(pointerSize: number): ViewSpec {
+  const p = pointerSize === 4 ? 4 : 8;
+  const sizeKind = wordKind(p);
+  return {
+    label: "malloc_chunk",
+    fields: [
+      field("prev_size", 0, p, sizeKind),
+      field("size", p, p, sizeKind, "low bits contain PREV_INUSE / IS_MMAPPED / NON_MAIN_ARENA"),
+      field("fd", 2 * p, p, "pointer", "free-chunk link"),
+      field("bk", 3 * p, p, "pointer", "free-chunk link"),
+      field("fd_nextsize", 4 * p, p, "pointer", "large-bin link"),
+      field("bk_nextsize", 5 * p, p, "pointer", "large-bin link"),
+    ],
+    expectedSize: 6 * p,
+  };
+}
+
 /**
  * Build the public _IO_FILE layout instead of hard-coding only 64-bit offsets.
  * The tail is intentionally named for both historical __pad5 and newer
@@ -226,8 +247,9 @@ function ioWideSpec(pointerSize: number): ViewSpec {
   return { label: "_IO_wide_data", fields, expectedSize: offset + p };
 }
 
-function viewSpec(type: Exclude<ChunkViewType, "malloc_chunk">, pointerSize: number): ViewSpec {
+function viewSpec(type: ChunkViewType, pointerSize: number): ViewSpec {
   switch (type) {
+    case "malloc_chunk": return mallocChunkSpec(pointerSize);
     case "io_file": return ioFileSpec(pointerSize);
     case "io_file_plus": return ioFilePlusSpec(pointerSize);
     case "io_jump_t": return ioJumpSpec(pointerSize);
@@ -272,9 +294,9 @@ function rowBytes(row: DataRow, pointerSize: number): number[] {
   return bytes;
 }
 
-function payloadMemory(chunk: HeapChunk, pointerSize: number): { memory: Map<number, number>; availableSize: number } {
+function payloadMemoryRows(rows: DataRow[], pointerSize: number): { memory: Map<number, number>; availableSize: number } {
   const memory = new Map<number, number>();
-  for (const row of dataRows(chunk)) {
+  for (const row of rows) {
     const offset = hexNumber(row.offset);
     if (!Number.isFinite(offset) || offset < 0) continue;
     rowBytes(row, pointerSize).forEach((byte, index) => memory.set(Math.trunc(offset) + index, byte));
@@ -373,8 +395,19 @@ function makeField(spec: FieldSpec, memory: Map<number, number>): ChunkViewField
 
 export function reinterpretChunk(chunk: HeapChunk, type: Exclude<ChunkViewType, "malloc_chunk">): ChunkView {
   const pointerSize = pointerSizeForChunk(chunk);
-  const spec = viewSpec(type, pointerSize);
-  const { memory, availableSize } = payloadMemory(chunk, pointerSize);
+  return reinterpretMemoryRows(dataRows(chunk), type, pointerSize, Boolean(chunk.dataTruncated));
+}
+
+/** Interpret rows captured at an arbitrary address using one registered ABI layout. */
+export function reinterpretMemoryRows(
+  rows: DataRow[],
+  type: ChunkViewType,
+  pointerSize: number,
+  dataTruncated = false,
+): ChunkView {
+  const normalizedPointerSize = pointerSize === 4 ? 4 : 8;
+  const spec = viewSpec(type, normalizedPointerSize);
+  const { memory, availableSize } = payloadMemoryRows(rows, normalizedPointerSize);
   return {
     type,
     label: spec.label,
@@ -385,8 +418,13 @@ export function reinterpretChunk(chunk: HeapChunk, type: Exclude<ChunkViewType, 
     // already fully present. Only mark the interpretation truncated when a
     // field in this specific structure falls outside the captured bytes.
     truncated: availableSize < spec.expectedSize,
-    pointerSize,
+    pointerSize: normalizedPointerSize,
   };
+}
+
+export function viewExpectedSize(type: ChunkViewType, pointerSize: number): number {
+  const normalizedPointerSize = pointerSize === 4 ? 4 : 8;
+  return viewSpec(type, normalizedPointerSize).expectedSize;
 }
 
 export function chunkViewOption(type: ChunkViewType): ChunkViewOption {

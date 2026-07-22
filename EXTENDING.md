@@ -33,6 +33,28 @@ Payload size is controlled from GDB with `vhserv --data-bytes N` or
 `vhstate --data-bytes N`. Set it to `0` when a large heap should be rendered
 without reading payload memory.
 
+## Address memory views
+
+The TypeScript frontend keeps user-created address interpretations in
+`MemoryViewRecord` values. A record contains the canonical `address`, selected
+`type`, target `pointerSize`, requested/available byte counts, and the same
+`DataRow[]` format used by chunk payloads. `frontend/src/graph.ts` adds each
+record as a `memory` node and resolves typed pointer fields against chunk,
+management-structure, and other memory-node address indexes.
+
+Live clients request bytes with Socket.IO:
+
+```json
+{"requestId":"memory-1","address":"0x7ffff7dd18c0","type":"io_file","size":216}
+```
+
+The server replies on `memoryData` with `requestId`, `address`, `type`,
+`pointerSize`, `requestedSize`, `availableSize`, `data`, `dataTruncated`, and
+an optional `error`. The handler schedules the read through `gdb.post_event`,
+so debugger APIs are not called from the aiohttp thread. Requests are capped at `0x10000`
+bytes. A frontend adapter can implement the same event contract and reuse
+`reinterpretMemoryRows` for a different debugger or transport.
+
 ## Chunk type views
 
 `frontend/src/structViews.ts` contains the typed payload view registry. A view

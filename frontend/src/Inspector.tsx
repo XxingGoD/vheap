@@ -1,13 +1,14 @@
-import { Clipboard, Code2, Database, ExternalLink, FileJson, X } from "lucide-react";
+import { AlertTriangle, Clipboard, Code2, Database, ExternalLink, FileJson, Trash2, X } from "lucide-react";
 import { useState, type ReactNode } from "react";
 
 import { chunkBaseAddress, dataRows, fieldRows, formatHex } from "./data";
-import { CHUNK_VIEW_OPTIONS, chunkViewOption, reinterpretChunk } from "./structViews";
+import { CHUNK_VIEW_OPTIONS, chunkViewOption, reinterpretChunk, reinterpretMemoryRows } from "./structViews";
 import type { ChunkViewField, ChunkViewType, SelectedItem } from "./types";
 
 interface InspectorProps {
   item: SelectedItem | null;
   onClose: () => void;
+  onRemoveMemoryView: (id: string) => void;
 }
 
 function value(value: string | undefined): string {
@@ -18,7 +19,7 @@ function copyValue(raw: string): void {
   if (typeof navigator !== "undefined" && navigator.clipboard) void navigator.clipboard.writeText(raw);
 }
 
-export function Inspector({ item, onClose }: InspectorProps) {
+export function Inspector({ item, onClose, onRemoveMemoryView }: InspectorProps) {
   const [chunkViewTypes, setChunkViewTypes] = useState<Record<string, ChunkViewType>>({});
   return (
     <aside className={`inspector ${item ? "has-selection" : ""}`} aria-label="Inspector">
@@ -39,6 +40,8 @@ export function Inspector({ item, onClose }: InspectorProps) {
         />
       ) : item.kind === "structure" ? (
         <StructureInspector item={item} />
+      ) : item.kind === "memory" ? (
+        <MemoryInspector item={item} onRemove={onRemoveMemoryView} />
       ) : (
         <HeadInspector item={item} />
       )}
@@ -140,7 +143,60 @@ function TypedField({ field }: { field: ChunkViewField }) {
           <button className="mini-icon" type="button" disabled={!field.available} onClick={() => copyValue(field.value)} title="Copy value" aria-label={`Copy ${field.name}`}><Clipboard size={12} /></button>
         </div>
       </div>
+      {field.target && <div className="typed-field-target">pointer target <code>{field.target}</code></div>}
       {field.note && <div className="typed-field-note">{field.note}</div>}
+    </div>
+  );
+}
+
+function MemoryInspector({
+  item,
+  onRemove,
+}: {
+  item: Extract<SelectedItem, { kind: "memory" }>;
+  onRemove: (id: string) => void;
+}) {
+  const { memoryView } = item;
+  const interpreted = reinterpretMemoryRows(memoryView.data, memoryView.type, memoryView.pointerSize, memoryView.dataTruncated);
+  const visibleRows = memoryView.data.slice(0, 96);
+  return (
+    <div className="inspector-content">
+      <div className="inspector-heading"><span className="node-kind">memory</span><h2>{memoryView.type}</h2></div>
+      <div className="inspector-subtitle">{value(memoryView.address)}</div>
+      <div className="memory-inspector-actions">
+        <span className="memory-source-label">address interpretation</span>
+        <button className="remove-memory-button" type="button" onClick={() => onRemove(memoryView.id)}><Trash2 size={13} /> remove view</button>
+      </div>
+      <div className="copy-grid">
+        <CopyValue label="address" raw={memoryView.address} />
+        <CopyValue label="type" raw={memoryView.type} />
+        <CopyValue label="read" raw={`${memoryView.availableSize} / ${memoryView.requestedSize} B`} />
+        <CopyValue label="pointer" raw={`${memoryView.pointerSize * 8}-bit`} />
+      </div>
+      {memoryView.error && <div className="memory-inspector-error"><AlertTriangle size={14} /><span>{memoryView.error}</span></div>}
+      <InspectorSection title={interpreted.label} icon={<Code2 size={13} />}>
+        <div className="view-type-meta">
+          <span>{interpreted.pointerSize * 8}-bit pointers</span>
+          <span>{formatHex(interpreted.availableSize)} / {formatHex(interpreted.expectedSize)} bytes</span>
+        </div>
+        {interpreted.truncated && <div className="view-type-warning">captured bytes are shorter than the selected structure layout</div>}
+        <div className="typed-field-list">
+          {interpreted.fields.map((field) => <TypedField key={`${field.offset}-${field.name}`} field={field} />)}
+        </div>
+      </InspectorSection>
+      <InspectorSection title="raw memory" icon={<Database size={13} />}>
+        <div className="payload-info"><span>{value(memoryView.address)}</span><span>{memoryView.availableSize} bytes</span></div>
+        {memoryView.dataDisabled ? <div className="payload-empty">memory reads disabled</div> : visibleRows.length === 0 ? <div className="payload-empty">no bytes returned</div> : (
+          <div className="inspector-payload-table">
+            <div className="payload-table-head"><span>offset</span><span>value</span><span>ascii</span></div>
+            {visibleRows.map((row, index) => <div className="payload-table-line" key={`${row.offset}-${index}`}><span>{row.offset}</span><code>{row.value}</code><span>{row.ascii || row.bytes || ""}</span></div>)}
+          </div>
+        )}
+        {memoryView.dataTruncated && <div className="payload-truncated">memory read truncated before the requested length</div>}
+        {memoryView.data.length > visibleRows.length && <div className="payload-truncated">{memoryView.data.length - visibleRows.length} rows omitted</div>}
+      </InspectorSection>
+      {memoryView.source && <div className="source-line">source <code>{memoryView.source}</code></div>}
+      <details className="raw-details"><summary><FileJson size={13} /> raw memory view JSON</summary><pre>{JSON.stringify(memoryView, null, 2)}</pre></details>
     </div>
   );
 }

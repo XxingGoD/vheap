@@ -1,6 +1,7 @@
 import {
   Activity,
   AlertTriangle,
+  Binary,
   Boxes,
   Check,
   Columns3,
@@ -11,6 +12,7 @@ import {
   LayoutDashboard,
   Pause,
   Play,
+  Plus,
   RefreshCw,
   Search,
   Settings2,
@@ -33,24 +35,47 @@ import {
   type ReactFlowInstance,
 } from "@xyflow/react";
 import { io, type Socket } from "socket.io-client";
-import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 
 import { BinHeadNode } from "./BinHeadNode";
 import { ChunkNode } from "./ChunkNode";
-import { demoSnapshot, displayBinNames, displayChunks, parseSnapshot } from "./data";
+import {
+  canonicalAddress,
+  demoSnapshot,
+  displayBinNames,
+  displayChunks,
+  isRecord,
+  memoryViewId,
+  normaliseMemoryView,
+  parseAddress,
+  parseSnapshot,
+  readSnapshotMemory,
+} from "./data";
 import { buildGraph, layoutGraph } from "./graph";
 import { Inspector } from "./Inspector";
+import { MemoryNode } from "./MemoryNode";
 import { StructureNode } from "./StructureNode";
-import type { HeapEdge, HeapNode, HeapSnapshot, SelectedItem } from "./types";
+import { CHUNK_VIEW_OPTIONS, viewExpectedSize } from "./structViews";
+import type { ChunkViewType, HeapEdge, HeapNode, HeapSnapshot, MemoryViewRecord, SelectedItem } from "./types";
 
 const nodeTypes: NodeTypes = {
   chunk: ChunkNode,
   structure: StructureNode,
   head: BinHeadNode,
+  memory: MemoryNode,
 };
 
 const DEMO_MODE = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("demo") === "1";
 const EMPTY_SNAPSHOT: HeapSnapshot = { heads: {}, bins: {}, structures: [] };
+const MAX_MEMORY_VIEW_BYTES = 0x10000;
+
+interface PendingMemoryRequest {
+  id: string;
+  address: string;
+  type: ChunkViewType;
+  requestedSize: number;
+  select: boolean;
+}
 
 function setEquals(left: Set<string>, right: Set<string>): boolean {
   if (left.size !== right.size) return false;
@@ -62,6 +87,7 @@ function itemFromNode(node: HeapNode | undefined): SelectedItem | null {
   if (!node) return null;
   if (node.data.kind === "chunk") return { kind: "chunk", id: node.id, bin: node.data.bin, chunk: node.data.chunk };
   if (node.data.kind === "structure") return { kind: "structure", id: node.id, structure: node.data.structure };
+  if (node.data.kind === "memory") return { kind: "memory", id: node.id, memoryView: node.data.memoryView };
   return { kind: "head", id: node.id, head: node.data.head, address: node.data.address, count: node.data.count };
 }
 
@@ -87,10 +113,153 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(true);
   const [compactLayout, setCompactLayout] = useState(() => typeof window !== "undefined" && window.innerWidth < 700);
+  const [memoryViews, setMemoryViews] = useState<MemoryViewRecord[]>([]);
+  const [memoryAddressInput, setMemoryAddressInput] = useState("");
+  const [memoryTypeInput, setMemoryTypeInput] = useState<ChunkViewType>("malloc_chunk");
+  const [memorySizeInput, setMemorySizeInput] = useState("");
+  const [memoryFormError, setMemoryFormError] = useState<string | null>(null);
+  const [memoryBusy, setMemoryBusy] = useState(false);
+  const pointerSize = snapshot.pointerSize === 4 ? 4 : 8;
   const socketRef = useRef<Socket | null>(null);
   const lastPayloadRef = useRef<string>("");
   const flowRef = useRef<ReactFlowInstance<HeapNode, HeapEdge> | null>(null);
+  const snapshotRef = useRef<HeapSnapshot>(snapshot);
+  const observedSnapshotRef = useRef<HeapSnapshot>(snapshot);
+  const pointerSizeRef = useRef(pointerSize);
+  const memoryViewsRef = useRef<MemoryViewRecord[]>([]);
+  const pendingMemoryRequests = useRef(new Map<string, PendingMemoryRequest>());
+  const memoryRequestSequence = useRef(0);
   const deferredQuery = useDeferredValue(query);
+
+  const selectedMemoryExpectedSize = viewExpectedSize(memoryTypeInput, pointerSize);
+
+  useEffect(() => {
+    snapshotRef.current = snapshot;
+    pointerSizeRef.current = pointerSize;
+  }, [pointerSize, snapshot]);
+
+  useEffect(() => {
+    memoryViewsRef.current = memoryViews;
+  }, [memoryViews]);
+
+  const upsertMemoryView = useCallback((record: MemoryViewRecord) => {
+    setMemoryViews((previous) => {
+      const index = previous.findIndex((view) => view.id === record.id);
+      if (index < 0) return [...previous, record];
+      const next = [...previous];
+      next[index] = record;
+      return next;
+    });
+  }, []);
+
+  const selectNode = useCallback((id: string) => {
+    setSelectedId(id);
+    setInspectorOpen(true);
+  }, []);
+
+  const handleMemoryData = useCallback((payload: unknown) => {
+    if (!isRecord(payload)) return;
+    const requestId = String(payload.requestId ?? "");
+    const pending = pendingMemoryRequests.current.get(requestId);
+    if (!pending) return;
+    pendingMemoryRequests.current.delete(requestId);
+    setMemoryBusy(pendingMemoryRequests.current.size > 0);
+    const response = {
+      ...payload,
+      id: pending.id,
+      address: payload.address ?? pending.address,
+      type: payload.type ?? pending.type,
+      pointerSize: payload.pointerSize ?? pointerSizeRef.current,
+      requestedSize: payload.requestedSize ?? pending.requestedSize,
+    };
+    const record = normaliseMemoryView(response, pending.type);
+    if (!record) return;
+    upsertMemoryView(record);
+    if (pending.select) selectNode(record.id);
+  }, [selectNode, upsertMemoryView]);
+
+  const requestMemoryView = useCallback((addressInput: string, type: ChunkViewType, requestedSize: number, select = true) => {
+    const parsedAddress = parseAddress(addressInput);
+    if (parsedAddress === null) {
+      setMemoryFormError("enter a hexadecimal or decimal address");
+      return;
+    }
+    if (!Number.isInteger(requestedSize) || requestedSize < 1 || requestedSize > MAX_MEMORY_VIEW_BYTES) {
+      setMemoryFormError(`read size must be between 1 and ${MAX_MEMORY_VIEW_BYTES} bytes`);
+      return;
+    }
+    const address = canonicalAddress(parsedAddress);
+    const id = memoryViewId(address, type);
+
+    if (DEMO_MODE) {
+      const read = readSnapshotMemory(snapshotRef.current, parsedAddress, requestedSize);
+      upsertMemoryView({
+        id,
+        address,
+        type,
+        pointerSize: read.pointerSize,
+        requestedSize,
+        availableSize: read.availableSize,
+        data: read.rows,
+        dataTruncated: read.availableSize < requestedSize,
+        source: "demo",
+        ...(read.availableSize === 0 ? { error: "address is outside the captured demo memory" } : {}),
+      });
+      setMemoryFormError(null);
+      if (select) selectNode(id);
+      return;
+    }
+
+    const socket = socketRef.current;
+    if (!socket || !socket.connected) {
+      setMemoryFormError("GDB socket is not connected");
+      return;
+    }
+    const requestId = `memory-${Date.now().toString(36)}-${(memoryRequestSequence.current += 1).toString(36)}`;
+    pendingMemoryRequests.current.set(requestId, {
+      id,
+      address,
+      type,
+      requestedSize,
+      select,
+    });
+    setMemoryBusy(true);
+    upsertMemoryView({
+      id,
+      address,
+      type,
+      pointerSize: pointerSizeRef.current,
+      requestedSize,
+      availableSize: 0,
+      data: [],
+      dataTruncated: true,
+      source: "gdb",
+    });
+    setMemoryFormError(null);
+    socket.emit("readMemory", { requestId, address, type, size: requestedSize });
+  }, [selectNode, upsertMemoryView]);
+
+  const removeMemoryView = useCallback((id: string) => {
+    setMemoryViews((previous) => previous.filter((view) => view.id !== id));
+    setSelectedId((current) => current === id || current === `memory_${id}` ? null : current);
+    for (const [requestId, request] of pendingMemoryRequests.current.entries()) {
+      if (request.id === id) pendingMemoryRequests.current.delete(requestId);
+    }
+    setMemoryBusy(pendingMemoryRequests.current.size > 0);
+  }, []);
+
+  const refreshMemoryViews = useCallback(() => {
+    for (const view of memoryViewsRef.current) {
+      if ([...pendingMemoryRequests.current.values()].some((request) => request.id === view.id)) continue;
+      requestMemoryView(view.address, view.type, view.requestedSize, false);
+    }
+  }, [requestMemoryView]);
+
+  useEffect(() => {
+    if (observedSnapshotRef.current === snapshot) return;
+    observedSnapshotRef.current = snapshot;
+    refreshMemoryViews();
+  }, [refreshMemoryViews, snapshot]);
 
   useEffect(() => {
     const updateLayoutMode = () => setCompactLayout(window.innerWidth < 700);
@@ -130,17 +299,25 @@ export default function App() {
       setConnected(true);
       setError(null);
       socket.emit("getHeap", "");
+      refreshMemoryViews();
     });
-    socket.on("disconnect", () => setConnected(false));
+    socket.on("disconnect", () => {
+      setConnected(false);
+      pendingMemoryRequests.current.clear();
+      setMemoryBusy(false);
+    });
     socket.on("connect_error", (reason) => setError(reason.message || "Socket.IO connection failed"));
     socket.on("heapData", receiveSnapshot);
+    socket.on("memoryData", handleMemoryData);
     return () => {
       socket.removeAllListeners();
       socket.disconnect();
       socketRef.current = null;
+      pendingMemoryRequests.current.clear();
+      setMemoryBusy(false);
       setConnected(false);
     };
-  }, [receiveSnapshot]);
+  }, [handleMemoryData, receiveSnapshot, refreshMemoryViews]);
 
   useEffect(() => {
     if (DEMO_MODE || !live) return;
@@ -157,6 +334,25 @@ export default function App() {
     socketRef.current?.emit("getHeap", "");
   }, []);
 
+  const submitMemoryView = useCallback((event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const address = parseAddress(memoryAddressInput);
+    if (address === null) {
+      setMemoryFormError("enter a hexadecimal or decimal address");
+      return;
+    }
+    let requestedSize = selectedMemoryExpectedSize;
+    if (memorySizeInput.trim()) {
+      const parsedSize = parseAddress(memorySizeInput);
+      if (parsedSize === null || parsedSize < 1n || parsedSize > BigInt(MAX_MEMORY_VIEW_BYTES)) {
+        setMemoryFormError(`read size must be between 1 and ${MAX_MEMORY_VIEW_BYTES} bytes`);
+        return;
+      }
+      requestedSize = Number(parsedSize);
+    }
+    requestMemoryView(canonicalAddress(address), memoryTypeInput, requestedSize, true);
+  }, [memoryAddressInput, memorySizeInput, memoryTypeInput, requestMemoryView, selectedMemoryExpectedSize]);
+
   const toggleNode = useCallback((id: string) => {
     setExpanded((previous) => {
       const next = new Set(previous);
@@ -165,19 +361,16 @@ export default function App() {
     });
   }, []);
 
-  const selectNode = useCallback((id: string) => {
-    setSelectedId(id);
-    setInspectorOpen(true);
-  }, []);
-
   const graphModel = useMemo(() => buildGraph(snapshot, {
     visibleBins,
     showStructures,
+    memoryViews,
     query: deferredQuery,
     expanded,
     onToggle: toggleNode,
     onSelect: selectNode,
-  }), [snapshot, visibleBins, showStructures, deferredQuery, expanded, toggleNode, selectNode]);
+    onRemoveMemoryView: removeMemoryView,
+  }), [snapshot, visibleBins, showStructures, memoryViews, deferredQuery, expanded, toggleNode, selectNode, removeMemoryView]);
 
   const selected = useMemo(() => {
     const graphNode = graphModel.nodes.find((node) => node.id === selectedId);
@@ -236,6 +429,7 @@ export default function App() {
         <div className="topbar-stats">
           <div className="stat"><span>visible</span><strong>{visibleChunkCount}</strong><small>/ {totalChunkCount}</small></div>
           <div className="stat"><span>structures</span><strong>{graphModel.structures.length}</strong></div>
+          <div className="stat"><span>memory views</span><strong>{memoryViews.length}</strong></div>
           <div className={`connection ${connected ? "is-online" : "is-offline"}`}><span className="status-dot" />{DEMO_MODE ? "demo" : connected ? "live" : "offline"}</div>
         </div>
         <div className="topbar-actions">
@@ -265,6 +459,33 @@ export default function App() {
           <section className="sidebar-section">
             <div className="section-heading"><span>allocator structures</span><button className="text-button" type="button" onClick={() => setShowStructures((show) => !show)}>{showStructures ? <Eye size={13} /> : <EyeOff size={13} />}{showStructures ? "shown" : "hidden"}</button></div>
             <button className={`structure-toggle ${showStructures ? "is-on" : ""}`} type="button" onClick={() => setShowStructures((show) => !show)}><span className="toggle-track"><span /></span><span>malloc_state / heap_info / tcache</span><b>{snapshot.structures.length}</b></button>
+          </section>
+
+          <section className="sidebar-section memory-section">
+            <div className="section-heading"><span><Binary size={13} /> memory views</span><span className="section-count">{memoryViews.length}</span></div>
+            <form className="memory-form" onSubmit={submitMemoryView}>
+              <label className="memory-form-label" htmlFor="memory-address">address</label>
+              <input id="memory-address" className="memory-input" value={memoryAddressInput} onChange={(event) => setMemoryAddressInput(event.target.value)} placeholder="0x7ffff7dd18c0" spellCheck={false} autoComplete="off" />
+              <label className="memory-form-label" htmlFor="memory-type">structure type</label>
+              <select id="memory-type" className="memory-input" value={memoryTypeInput} onChange={(event) => setMemoryTypeInput(event.target.value as ChunkViewType)}>
+                {CHUNK_VIEW_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+              </select>
+              <label className="memory-form-label" htmlFor="memory-size">read bytes <span>(optional)</span></label>
+              <input id="memory-size" className="memory-input" value={memorySizeInput} onChange={(event) => setMemorySizeInput(event.target.value)} placeholder={String(selectedMemoryExpectedSize)} inputMode="text" spellCheck={false} />
+              <div className="memory-form-meta">layout {selectedMemoryExpectedSize} B · {pointerSize * 8}-bit target</div>
+              {memoryFormError && <div className="memory-form-error"><AlertTriangle size={12} /><span>{memoryFormError}</span></div>}
+              <button className="memory-submit" type="submit" disabled={memoryBusy && !DEMO_MODE}><Plus size={14} />{memoryBusy ? "reading..." : "parse address"}</button>
+            </form>
+            {memoryViews.length > 0 && <div className="memory-view-list">
+              {memoryViews.map((view) => (
+                <div className="memory-view-item" key={view.id}>
+                  <button type="button" className="memory-view-select" onClick={() => selectNode(view.id)} title="Select memory view">
+                    <span className="memory-view-type">{view.type}</span><code>{view.address}</code><small>{view.availableSize}/{view.requestedSize} B</small>
+                  </button>
+                  <button type="button" className="mini-icon memory-view-remove" onClick={() => removeMemoryView(view.id)} title="Remove memory view" aria-label={`Remove ${view.type} at ${view.address}`}><X size={12} /></button>
+                </div>
+              ))}
+            </div>}
           </section>
 
           <section className="sidebar-section layout-section">
@@ -309,14 +530,14 @@ export default function App() {
               >
                 <Background variant={BackgroundVariant.Dots} color="#2a3532" gap={24} size={1} />
                 <Controls showInteractive={false} position="bottom-left" />
-                <MiniMap position="bottom-right" pannable zoomable nodeColor={(node) => node.type === "structure" ? "#5faec3" : node.type === "head" ? "#d49b43" : "#668f7b"} maskColor="rgba(8, 12, 11, 0.72)" />
-                <Panel position="top-right" className="graph-legend"><span className="legend-item"><i className="legend-swatch chunk" /> chunk</span><span className="legend-item"><i className="legend-swatch structure" /> structure</span><span className="legend-item"><i className="legend-swatch pointer" /> pointer</span></Panel>
+                <MiniMap position="bottom-right" pannable zoomable nodeColor={(node) => node.type === "structure" ? "#5faec3" : node.type === "memory" ? "#b995db" : node.type === "head" ? "#d49b43" : "#668f7b"} maskColor="rgba(8, 12, 11, 0.72)" />
+                <Panel position="top-right" className="graph-legend"><span className="legend-item"><i className="legend-swatch chunk" /> chunk</span><span className="legend-item"><i className="legend-swatch structure" /> structure</span><span className="legend-item"><i className="legend-swatch memory" /> memory</span><span className="legend-item"><i className="legend-swatch pointer" /> pointer</span></Panel>
               </ReactFlow>
             )}
           </div>
         </main>
 
-        {inspectorOpen && <Inspector item={selected} onClose={() => { setInspectorOpen(false); setSelectedId(null); }} />}
+        {inspectorOpen && <Inspector item={selected} onClose={() => { setInspectorOpen(false); setSelectedId(null); }} onRemoveMemoryView={removeMemoryView} />}
       </div>
       {!sidebarOpen && <button className="mobile-filter-fab" type="button" onClick={() => setSidebarOpen(true)} title="Open filters" aria-label="Open filters"><Filter size={17} /></button>}
     </div>
